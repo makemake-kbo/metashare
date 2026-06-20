@@ -36,6 +36,8 @@ public:
 private:
     AMediaCodec* codec_ = nullptr;
     bool started_ = false;
+    std::uint32_t fed_count_ = 0;
+    std::uint32_t rendered_count_ = 0;
 };
 
 }  // namespace metashare

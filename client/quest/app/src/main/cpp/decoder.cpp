@@ -1,9 +1,12 @@
 #include "decoder.hpp"
 
+#include <android/log.h>
 #include <cstring>
 
 #include <media/NdkMediaCodec.h>
 #include <media/NdkMediaFormat.h>
+
+#define LOG(...) __android_log_print(ANDROID_LOG_INFO, "MetaShare", __VA_ARGS__)
 
 namespace metashare {
 
@@ -51,8 +54,14 @@ bool Decoder::feed(const std::uint8_t* data, std::size_t size,
         return false;
     }
     std::memcpy(buf, data, size);
-    const uint32_t flags = keyframe ? AMEDIACODEC_BUFFER_FLAG_KEY_FRAME : 0;
-    AMediaCodec_queueInputBuffer(codec_, idx, 0, size, pts_usec, flags);
+    // No KEY_FRAME buffer flag in the NDK; the codec infers it from the stream.
+    (void)keyframe;
+    AMediaCodec_queueInputBuffer(codec_, idx, 0, size, pts_usec, 0);
+    if (fed_count_ == 0) {
+        LOG("decoder accepted first %s frame (%zu bytes)",
+            keyframe ? "key" : "delta", size);
+    }
+    ++fed_count_;
     return true;
 }
 
@@ -65,6 +74,10 @@ bool Decoder::drain_to_surface() {
         if (out >= 0) {
             // render=true hands the frame to the Surface (SurfaceTexture).
             AMediaCodec_releaseOutputBuffer(codec_, out, /*render=*/true);
+            if (rendered_count_ == 0) {
+                LOG("decoder produced first output frame");
+            }
+            ++rendered_count_;
             rendered = true;
         } else if (out == AMEDIACODEC_INFO_TRY_AGAIN_LATER) {
             break;
@@ -84,6 +97,8 @@ void Decoder::close() {
         codec_ = nullptr;
     }
     started_ = false;
+    fed_count_ = 0;
+    rendered_count_ = 0;
 }
 
 }  // namespace metashare

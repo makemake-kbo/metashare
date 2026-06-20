@@ -1,19 +1,19 @@
 # MetaShare
 
-Mirror a Linux **Wayland** session to a **Meta Quest 3** and view it as a
-floating window in VR — an open re-creation of Meta Remote Desktop for Linux.
+Mirror a Linux **Wayland** session to a **Meta Quest** and view it as a
+floating Horizon OS app window — an open re-creation of Meta Remote Desktop for
+Linux.
 
 The host runs a modern C++ CLI **streamer** that captures the Wayland session,
-encodes it to H.264, and serves it over the LAN. The Quest **client** discovers
-the host automatically, decodes the stream, and paints it onto an OpenXR quad
-layer floating in space. A **desktop test client** mirrors the Quest client
-(minus OpenXR) so the whole pipeline can be developed and verified without
-headset hardware.
+encodes it to H.264, and serves it over the LAN. The Quest **client** is a
+standard resizable Android app, so Horizon OS presents it as a floating system
+window. A **desktop test client** mirrors the stream path so the pipeline can be
+developed and verified without headset hardware.
 
 ```
- ┌──────────────────────── Linux host ────────────────────────┐        ┌──────── Quest 3 ────────┐
+ ┌──────────────────────── Linux host ────────────────────────┐        ┌──────── Quest ──────────┐
  │ xdg-desktop-portal ─▶ PipeWire ─▶ Encoder(H.264) ─▶ TCP ────┼──LAN──▶│ TCP ─▶ MediaCodec ─▶     │
- │            ▲ user picks a monitor          UDP discovery ◀──┼────────┤ OpenXR quad layer       │
+ │            ▲ user picks a monitor          UDP discovery ◀──┼────────┤ Android SurfaceView     │
  └────────────────────────────────────────────────────────────┘        └─────────────────────────┘
 ```
 
@@ -27,7 +27,7 @@ headset hardware.
 | Test-pattern capture source            | ✅ working (verified end-to-end)   |
 | Wayland capture (portal + PipeWire)    | ✅ builds; needs a Wayland session |
 | Desktop test client (SDL2)             | ✅ working                         |
-| Quest 3 OpenXR client                  | 🚧 scaffold — see `client/quest`   |
+| Quest Android 2D client                | ✅ working — see `client/quest`     |
 
 Hardware (VAAPI/NVENC) encoding is the next planned step; today the encoder is
 portable software x264 tuned for zero-latency.
@@ -108,7 +108,7 @@ src/streamer/                 The CLI streamer
   discovery.*                 UDP discovery responder
   main.cpp                    Pipeline + CLI
 client/desktop_test/          SDL2 reference client (validates the stream)
-client/quest/                 Quest 3 OpenXR client (scaffold) — see its README
+client/quest/                 Quest Android 2D client — see its README
 ```
 
 ## License

@@ -53,5 +53,24 @@
             echo "Test client: ./build/client/desktop_test/metashare-testclient"
           '';
         };
+
+        # Android (Quest client) toolchain. The Android SDK + NDK themselves are
+        # installed into client/quest/.android-sdk via sdkmanager (see
+        # client/quest/README.md); this shell provides JDK + Gradle to drive it.
+        devShells.android = pkgs.mkShell {
+          packages = with pkgs; [
+            jdk17
+            gradle
+            unzip
+            which
+            file
+          ];
+
+          shellHook = ''
+            echo "MetaShare Android shell — SDK at client/quest/.android-sdk"
+            echo "  cd client/quest && gradle assembleDebug"
+            echo "  (first run: ./setup-android-sdk.sh to install the SDK)"
+          '';
+        };
       });
 }
