@@ -1,0 +1,7 @@
+# Real Wayland capture via xdg-desktop-portal + PipeWire.
+# Off by default so a fresh `meson setup build` always succeeds with just the
+# encode/network stack and the test-pattern source. Enable on a Linux/Wayland
+# host that has the portal + pipewire dev libraries:
+#     meson setup build -Dportal=enabled
+option('portal', type : 'feature', value : 'auto',
+  description : 'Enable Wayland screencast capture (xdg-desktop-portal + PipeWire)')
