@@ -48,11 +48,14 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private static final int FRAME_KEYFRAME = 1;
 
     private SurfaceView surfaceView;
+    private FrameLayout root;
     private TextView statusView;
     private volatile boolean running;
     private volatile DatagramSocket discoverySocket;
     private volatile Socket streamSocket;
     private Thread worker;
+    private volatile int streamWidth;
+    private volatile int streamHeight;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -82,6 +85,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         statusParams.setMargins(18, 18, 18, 18);
         root.addView(statusView, statusParams);
         setContentView(root);
+        this.root = root;
+        root.addOnLayoutChangeListener(
+                (v, l, t, r, b, ol, ot, or, ob) -> applyAspectRatio());
 
         getWindow().getDecorView().setSystemUiVisibility(
                 View.SYSTEM_UI_FLAG_FULLSCREEN
@@ -105,6 +111,32 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
         stopWorker();
+    }
+
+    private void applyAspectRatio() {
+        int sw = streamWidth;
+        int sh = streamHeight;
+        int cw = root.getWidth();
+        int ch = root.getHeight();
+        if (sw <= 0 || sh <= 0 || cw <= 0 || ch <= 0) return;
+        float streamRatio = (float) sw / sh;
+        float containerRatio = (float) cw / ch;
+        int targetW;
+        int targetH;
+        if (streamRatio > containerRatio) {
+            targetW = cw;
+            targetH = Math.round(cw / streamRatio);
+        } else {
+            targetH = ch;
+            targetW = Math.round(ch * streamRatio);
+        }
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) surfaceView.getLayoutParams();
+        if (lp == null
+                || lp.width != targetW || lp.height != targetH
+                || lp.gravity != Gravity.CENTER) {
+            surfaceView.setLayoutParams(
+                    new FrameLayout.LayoutParams(targetW, targetH, Gravity.CENTER));
+        }
     }
 
     @Override
@@ -251,6 +283,10 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         if (version != PROTOCOL_VERSION || codec != CODEC_H264 || width <= 0 || height <= 0) {
             throw new IOException("unsupported stream");
         }
+
+        streamWidth = width;
+        streamHeight = height;
+        runOnUiThread(this::applyAspectRatio);
 
         MediaCodec decoder = null;
         try {
