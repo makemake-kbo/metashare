@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.metashare.client">
+
+    <!-- LAN streaming -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Broadcast discovery needs the multicast/broadcast lock on some devices -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
+    <uses-feature android:name="android.hardware.vr.headtracking"
+        android:required="true" android:version="1" />
+    <!-- Quest store / OpenXR -->
+    <uses-feature android:name="oculus.software.handtracking" android:required="false" />
+
+    <application
+        android:allowBackup="false"
+        android:label="MetaShare"
+        android:hasCode="false">
+
+        <!-- Cleartext TCP to a LAN host (default; tighten for production). -->
+        <meta-data android:name="com.oculus.supportedDevices" android:value="quest3|questpro" />
+
+        <activity
+            android:name="android.app.NativeActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="landscape"
+            android:configChanges="screenSize|screenLayout|orientation|keyboardHidden|keyboard|navigation|uiMode|density">
+            <meta-data android:name="android.app.lib_name" android:value="metashare_client" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <!-- Marks this as an immersive VR app to the Quest launcher -->
+                <category android:name="com.oculus.intent.category.VR" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

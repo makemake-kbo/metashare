@@ -28,6 +28,7 @@ struct pw_thread_loop;
 struct pw_context;
 struct pw_core;
 struct pw_stream;
+struct spa_pod;
 
 namespace metashare {
 

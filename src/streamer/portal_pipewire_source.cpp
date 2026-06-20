@@ -31,9 +31,10 @@ namespace metashare {
 // ===========================================================================
 //
 // sdbus-c++ is the most version-sensitive dependency here. This targets the
-// v2.x strong-typed API. If your nixpkgs pins sdbus-c++ 1.x, the method/signal
-// registration calls below need the older string-based overloads + an explicit
-// finishRegistration().
+// v1.x string-based API (the version in current nixpkgs): plain-string
+// method/interface names and an explicit finishRegistration() after signal
+// registration. sdbus-c++ v2 replaced these with strong types (ServiceName,
+// InterfaceName, MethodName) and dropped finishRegistration().
 
 struct PortalState {
     std::unique_ptr<sdbus::IConnection> conn;
@@ -77,8 +78,7 @@ bool portal_request(sdbus::IConnection& conn, const std::string& unique_name,
     const std::string rpath = request_path(unique_name, token);
     options["handle_token"] = sdbus::Variant(token);
 
-    auto req = sdbus::createProxy(conn, sdbus::ServiceName{kPortalService},
-                                  sdbus::ObjectPath{rpath});
+    auto req = sdbus::createProxy(conn, std::string{kPortalService}, rpath);
 
     std::mutex m;
     std::condition_variable cv;
@@ -86,15 +86,16 @@ bool portal_request(sdbus::IConnection& conn, const std::string& unique_name,
     std::uint32_t code = 0;
     VarMap out;
 
-    req->uponSignal(sdbus::SignalName{"Response"})
-        .onInterface(sdbus::InterfaceName{kRequestIface})
-        .call([&](std::uint32_t response, VarMap r) {
+    req->uponSignal("Response")
+        .onInterface(kRequestIface)
+        .call([&](const std::uint32_t& response, const VarMap& r) {
             std::lock_guard<std::mutex> lk(m);
             code = response;
-            out = std::move(r);
+            out = r;
             done = true;
             cv.notify_all();
         });
+    req->finishRegistration();
 
     try {
         invoke(options);
@@ -132,8 +133,8 @@ bool PortalPipeWireSource::run_portal(int& pw_fd, std::uint32_t& node_id,
     sdbus::IConnection& conn = *portal_->conn;
     const std::string unique = conn.getUniqueName();
 
-    auto portal = sdbus::createProxy(conn, sdbus::ServiceName{kPortalService},
-                                     sdbus::ObjectPath{kPortalPath});
+    auto portal =
+        sdbus::createProxy(conn, std::string{kPortalService}, std::string{kPortalPath});
 
     // 1) CreateSession
     {
@@ -142,8 +143,8 @@ bool PortalPipeWireSource::run_portal(int& pw_fd, std::uint32_t& node_id,
         VarMap res;
         auto call = [&](VarMap& options) {
             sdbus::ObjectPath handle;
-            portal->callMethod(sdbus::MethodName{"CreateSession"})
-                .onInterface(sdbus::InterfaceName{kScreenCastIface})
+            portal->callMethod("CreateSession")
+                .onInterface(kScreenCastIface)
                 .withArguments(options)
                 .storeResultsTo(handle);
         };
@@ -167,8 +168,8 @@ bool PortalPipeWireSource::run_portal(int& pw_fd, std::uint32_t& node_id,
         VarMap res;
         auto call = [&](VarMap& options) {
             sdbus::ObjectPath handle;
-            portal->callMethod(sdbus::MethodName{"SelectSources"})
-                .onInterface(sdbus::InterfaceName{kScreenCastIface})
+            portal->callMethod("SelectSources")
+                .onInterface(kScreenCastIface)
                 .withArguments(session, options)
                 .storeResultsTo(handle);
         };
@@ -181,8 +182,8 @@ bool PortalPipeWireSource::run_portal(int& pw_fd, std::uint32_t& node_id,
         VarMap opts;
         auto call = [&](VarMap& options) {
             sdbus::ObjectPath handle;
-            portal->callMethod(sdbus::MethodName{"Start"})
-                .onInterface(sdbus::InterfaceName{kScreenCastIface})
+            portal->callMethod("Start")
+                .onInterface(kScreenCastIface)
                 .withArguments(session, std::string{""}, options)
                 .storeResultsTo(handle);
         };
@@ -203,7 +204,7 @@ bool PortalPipeWireSource::run_portal(int& pw_fd, std::uint32_t& node_id,
             err = "portal: empty stream list";
             return false;
         }
-        node_id = streams[0].get<0>();
+        node_id = std::get<0>(streams[0]);
     }
 
     // 4) OpenPipeWireRemote -> file descriptor.
@@ -211,8 +212,8 @@ bool PortalPipeWireSource::run_portal(int& pw_fd, std::uint32_t& node_id,
         VarMap opts;
         sdbus::UnixFd fd;
         try {
-            portal->callMethod(sdbus::MethodName{"OpenPipeWireRemote"})
-                .onInterface(sdbus::InterfaceName{kScreenCastIface})
+            portal->callMethod("OpenPipeWireRemote")
+                .onInterface(kScreenCastIface)
                 .withArguments(session, opts)
                 .storeResultsTo(fd);
         } catch (const sdbus::Error& e) {

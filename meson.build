@@ -6,7 +6,12 @@ project('metashare', 'cpp',
     'b_ndebug=if-release',
   ])
 
-add_project_arguments('-Wno-unused-parameter', language : 'cpp')
+add_project_arguments(
+  '-Wno-unused-parameter',
+  # We initialize C event-struct callbacks with designated initializers and
+  # intentionally leave unused members zeroed.
+  '-Wno-missing-field-initializers',
+  language : 'cpp')
 
 # Shared protocol/common headers.
 common_inc = include_directories('src/common')

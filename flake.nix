@@ -16,9 +16,9 @@
           pipewire           # capture the screencast PipeWire stream
           ffmpeg-full        # libavcodec/util/format/swscale for encode
           sdbus-cpp          # talk to xdg-desktop-portal over D-Bus
+          systemd            # provides libsystemd.pc that sdbus-c++ requires
           libdrm             # DMA-BUF frame import
-          sdl2-compat        # desktop test client window/render
-          SDL2               # (alias kept for older nixpkgs)
+          SDL2               # desktop test client window/render
         ];
 
         nativeDeps = with pkgs; [

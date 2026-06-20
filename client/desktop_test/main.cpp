@@ -6,6 +6,8 @@
 // without Quest hardware.
 
 #include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -62,14 +64,32 @@ bool discover(std::string& host, std::uint16_t& port, int timeout_ms) {
     probe.version = proto::kProtocolVersion;
     probe.client_caps = proto::kCapH264;
 
-    sockaddr_in bcast{};
-    bcast.sin_family = AF_INET;
-    bcast.sin_addr.s_addr = htonl(INADDR_BROADCAST);
-    bcast.sin_port = htons(proto::kDiscoveryPort);
-
     std::fprintf(stderr, "[client] broadcasting discovery probe...\n");
-    ::sendto(fd, &probe, sizeof(probe), 0, reinterpret_cast<sockaddr*>(&bcast),
-             sizeof(bcast));
+    // Send to the global broadcast AND each interface's directed broadcast, so
+    // discovery works on multi-homed dev boxes (docker/libvirt bridges, etc.)
+    // where 255.255.255.255 only egresses one interface.
+    auto send_to = [&](in_addr_t ip) {
+        sockaddr_in d{};
+        d.sin_family = AF_INET;
+        d.sin_addr.s_addr = ip;
+        d.sin_port = htons(proto::kDiscoveryPort);
+        ::sendto(fd, &probe, sizeof(probe), 0, reinterpret_cast<sockaddr*>(&d),
+                 sizeof(d));
+    };
+    send_to(htonl(INADDR_BROADCAST));
+    send_to(htonl(INADDR_LOOPBACK));  // same-machine streamer + client
+    ifaddrs* ifa = nullptr;
+    if (::getifaddrs(&ifa) == 0) {
+        for (ifaddrs* p = ifa; p; p = p->ifa_next) {
+            if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET) continue;
+            if (!(p->ifa_flags & IFF_BROADCAST) || (p->ifa_flags & IFF_LOOPBACK))
+                continue;
+            if (p->ifa_broadaddr)
+                send_to(reinterpret_cast<sockaddr_in*>(p->ifa_broadaddr)
+                            ->sin_addr.s_addr);
+        }
+        ::freeifaddrs(ifa);
+    }
 
     proto::DiscoveryOffer offer{};
     sockaddr_in from{};
