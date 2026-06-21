@@ -1,0 +1,96 @@
+name: CI
+
+# Build-as-test on every push and PR; cut a release (with the Quest APK
+# attached) whenever a tag is pushed.
+on:
+  push:
+    branches: ['**']
+    tags: ['*']
+  pull_request:
+
+# Avoid piling up redundant runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # --- Check: compile the Wayland streamer/UI via the Nix flake -------------
+  check:
+    name: Build streamer (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Build
+        run: nix build .#metashare --print-build-logs
+
+  # --- Build the Quest client APK (mirrors client/quest/README.md) ----------
+  apk:
+    name: Build Quest APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # The Android SDK/NDK (~1 GB) is fetched by setup-android-sdk.sh; cache it
+      # so we only pay that download when the script or its versions change.
+      - name: Cache Android SDK + Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            client/quest/.android-sdk
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: android-${{ runner.os }}-${{ hashFiles('client/quest/setup-android-sdk.sh', 'client/quest/app/build.gradle') }}
+          restore-keys: android-${{ runner.os }}-
+
+      - name: Install SDK and build APK
+        run: |
+          nix develop .#android --command bash -c '
+            set -euo pipefail
+            cd client/quest
+            ./setup-android-sdk.sh
+            gradle --no-daemon assembleDebug
+          '
+
+      - name: Stage APK
+        run: |
+          mkdir -p dist
+          cp client/quest/app/build/outputs/apk/debug/app-debug.apk \
+             dist/metashare-quest.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: metashare-quest-apk
+          path: dist/metashare-quest.apk
+
+  # --- Release: publish the APK whenever a tag is pushed --------------------
+  release:
+    name: Publish release
+    if: github.ref_type == 'tag'
+    needs: [check, apk]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: metashare-quest-apk
+          path: dist
+
+      - name: Name the asset after the tag
+        run: |
+          mv dist/metashare-quest.apk "dist/metashare-quest-${GITHUB_REF_NAME}.apk"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.apk
+          generate_release_notes: true

@@ -107,7 +107,13 @@
             unzip
             which
             file
+            curl          # setup-android-sdk.sh downloads cmdline-tools
+            cacert        # TLS roots for curl/sdkmanager in headless/CI shells
           ];
+
+          # Point curl/Java at the Nix cert bundle so the SDK downloads work in
+          # CI and other environments without system certificates.
+          SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
 
           shellHook = ''
             echo "MetaShare Android shell — SDK at client/quest/.android-sdk"
