@@ -11,6 +11,7 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
+import android.widget.PopupMenu;
 import android.widget.TextView;
 
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -47,12 +48,10 @@ public final class MonitorActivity extends Activity
         statusView.setBackgroundColor(0xAA000000);
         statusView.setPadding(18, 10, 18, 10);
 
-        TextView label = new TextView(this);
-        label.setText("Monitor " + (monitorIndex + 1));
-        label.setTextColor(0xCCFFFFFF);
-        label.setTextSize(12);
-        label.setBackgroundColor(0x88000000);
-        label.setPadding(12, 6, 12, 6);
+        View menuBar = new View(this);
+        menuBar.setBackgroundColor(0xCC444444);
+        menuBar.setClickable(true);
+        menuBar.setOnClickListener(this::showMenu);
 
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
@@ -65,12 +64,11 @@ public final class MonitorActivity extends Activity
                 Gravity.TOP | Gravity.START);
         statusParams.setMargins(18, 18, 18, 18);
         root.addView(statusView, statusParams);
-        FrameLayout.LayoutParams labelParams = new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM | Gravity.END);
-        labelParams.setMargins(18, 18, 18, 18);
-        root.addView(label, labelParams);
+        FrameLayout.LayoutParams menuBarParams = new FrameLayout.LayoutParams(
+                dp(80), dp(8),
+                Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        menuBarParams.setMargins(0, dp(8), 0, 0);
+        root.addView(menuBar, menuBarParams);
         setContentView(root);
         root.addOnLayoutChangeListener(
                 (v, l, t, r, b, ol, ot, or, ob) -> applyAspectRatio());
@@ -88,6 +86,24 @@ public final class MonitorActivity extends Activity
     }
 
     int getMonitorIndex() { return monitorIndex; }
+
+    private void showMenu(View anchor) {
+        PopupMenu menu = new PopupMenu(this, anchor);
+        menu.getMenu().add("Monitor " + (monitorIndex + 1)).setEnabled(false);
+        menu.getMenu().add("Close monitor");
+        menu.setOnMenuItemClickListener(item -> {
+            if ("Close monitor".contentEquals(item.getTitle())) {
+                finish();
+                return true;
+            }
+            return false;
+        });
+        menu.show();
+    }
+
+    private int dp(int value) {
+        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
 
     @Override
     public void surfaceCreated(SurfaceHolder holder) {

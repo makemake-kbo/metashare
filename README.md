@@ -30,53 +30,42 @@ ninja -C build
 
 ## Installing as an app (Nix)
 
-The flake exposes a `metashare` package with the streamer, the desktop test
-client, and the GTK4 control panel plus its GNOME `.desktop` entry.
-
-```sh
-# Run ad-hoc without installing:
-nix run .#ui            # GNOME control panel
-nix run .#streamer      # CLI streamer
-nix run .#testclient    # SDL2 test client
-
-# Or build a cached result symlink:
-nix build .#metashare   # → ./result/bin/{metashare-streamer,metashare-streamer-ui,…}
-
-# Or install into your user profile (binaries land in ~/.nix-profile/bin,
-# the .desktop entry in ~/.nix-profile/share/applications, so GNOME picks
-# them up automatically):
-nix profile install .#metashare
-```
-
-### NixOS / Home Manager
-
-To install system-wide on NixOS:
+The flake exposes a `metashare` package (streamer + SDL2 test client + GTK4
+control panel and its GNOME `.desktop` entry). It tracks **nixpkgs
+nixos-unstable**, so point its `nixpkgs` input at an unstable channel.
 
 ```nix
-environment.systemPackages = [
-  metashare-flake.packages.x86_64-linux.default
-];
-```
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";   # unstable required
+    metashare.url = "github:makemake-kbo/metashare";
+    metashare.inputs.nixpkgs.follows = "nixpkgs";
+  };
+}
 
-Or under Home Manager:
+# Pass `inputs` to your modules (specialArgs / extraSpecialArgs), then:
+environment.systemPackages = [ inputs.metashare.packages.${pkgs.system}.default ];  # NixOS
+home.packages             = [ inputs.metashare.packages.${pkgs.system}.default ];   # Home Manager
+
+# Wayland capture needs a portal running (GNOME ships one by default):
+xdg.portal.enable = true;
+xdg.portal.extraPortals = [ pkgs.xdg-desktop-portal-gnome ];
+```
 
 ```nix
-home.packages = [
-  metashare-flake.packages.x86_64-linux.default
-];
+# Run without installing:  nix run github:makemake-kbo/metashare[#streamer]
 ```
-
-The streamer needs a running `xdg-desktop-portal` (and a portal impl such as
-`xdg-desktop-portal-gnome` or `xdg-desktop-portal-wlr`) to capture a Wayland
-monitor. GNOME provides this out of the box.
 
 ### Run the streamer
 
 ```sh
-./build/src/streamer/metashare-streamer --source portal
+# Monitors will add additional virtual desktops. It does not go over 3 for now.
+./build/src/streamer/metashare-streamer --source portal --monitors 3
 ```
 
 ## How discovery works
+
+***ABSOLUTELY DO NOT EXPOSE ONLINE AND MAKE SURE THESE PORTS ARE ONLY EXPOSED LOCALLY!!!***
 
 Zero-config by design. The streamer listens on **UDP 7777**. The client
 broadcasts a small probe to `255.255.255.255:7777`; the streamer replies with

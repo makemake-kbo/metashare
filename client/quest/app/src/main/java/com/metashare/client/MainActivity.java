@@ -3,7 +3,6 @@ package com.metashare.client;
 import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Color;
-import android.graphics.drawable.ColorDrawable;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.Gravity;
@@ -13,9 +12,8 @@ import android.view.SurfaceView;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
-import android.widget.ArrayAdapter;
 import android.widget.FrameLayout;
-import android.widget.Spinner;
+import android.widget.PopupMenu;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -31,7 +29,7 @@ public final class MainActivity extends Activity
     private SurfaceView surfaceView;
     private FrameLayout root;
     private TextView statusView;
-    private Spinner monitorSpinner;
+    private int monitorCount = 1;
     private StreamSession session;
     private volatile int streamWidth;
     private volatile int streamHeight;
@@ -54,7 +52,10 @@ public final class MainActivity extends Activity
         statusView.setBackgroundColor(0xAA000000);
         statusView.setPadding(18, 10, 18, 10);
 
-        monitorSpinner = createMonitorSpinner();
+        View menuBar = new View(this);
+        menuBar.setBackgroundColor(0xCC444444);
+        menuBar.setClickable(true);
+        menuBar.setOnClickListener(this::showMenu);
 
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
@@ -67,11 +68,11 @@ public final class MainActivity extends Activity
                 Gravity.TOP | Gravity.START);
         statusParams.setMargins(18, 18, 18, 18);
         root.addView(statusView, statusParams);
-        FrameLayout.LayoutParams spinnerParams = new FrameLayout.LayoutParams(
-                dp(160), dp(44),
+        FrameLayout.LayoutParams menuBarParams = new FrameLayout.LayoutParams(
+                dp(80), dp(8),
                 Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-        spinnerParams.setMargins(0, dp(12), 0, 0);
-        root.addView(monitorSpinner, spinnerParams);
+        menuBarParams.setMargins(0, dp(8), 0, 0);
+        root.addView(menuBar, menuBarParams);
         setContentView(root);
         root.addOnLayoutChangeListener(
                 (v, l, t, r, b, ol, ot, or, ob) -> applyAspectRatio());
@@ -86,61 +87,23 @@ public final class MainActivity extends Activity
         setStatus("Searching for MetaShare streamer...");
     }
 
-    private Spinner createMonitorSpinner() {
-        String[] options = new String[MAX_MONITORS];
-        for (int i = 0; i < MAX_MONITORS; i++) {
-            options[i] = (i + 1) + (i == 0 ? " Monitor" : " Monitors");
+    private void showMenu(View anchor) {
+        PopupMenu menu = new PopupMenu(this, anchor);
+        for (int i = 1; i <= MAX_MONITORS; i++) {
+            String label = i + (i == 1 ? " Monitor" : " Monitors");
+            menu.getMenu().add(0, i, i, label).setCheckable(true).setChecked(i == monitorCount);
         }
-
-        ArrayAdapter<String> adapter = new ArrayAdapter<String>(
-                this, android.R.layout.simple_spinner_item, options) {
-            @Override
-            public View getView(int position, View convertView, android.view.ViewGroup parent) {
-                View v = super.getView(position, convertView, parent);
-                if (v instanceof TextView) {
-                    TextView tv = (TextView) v;
-                    tv.setTextColor(Color.WHITE);
-                    tv.setTextSize(14);
-                }
-                return v;
-            }
-
-            @Override
-            public View getDropDownView(int position, View convertView, android.view.ViewGroup parent) {
-                View v = super.getDropDownView(position, convertView, parent);
-                if (v instanceof TextView) {
-                    TextView tv = (TextView) v;
-                    tv.setTextColor(Color.WHITE);
-                    tv.setBackgroundColor(0xFF222222);
-                    tv.setPadding(dp(16), dp(10), dp(16), dp(10));
-                }
-                return v;
-            }
-        };
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-
-        Spinner spinner = new Spinner(this);
-        spinner.setAdapter(adapter);
-        spinner.setBackgroundColor(0xCC000000);
-        spinner.setPopupBackgroundDrawable(new ColorDrawable(0xFF222222));
-        spinner.setOnItemSelectedListener(new Spinner.OnItemSelectedListener() {
-            private boolean first = true;
-
-            @Override
-            public void onItemSelected(android.widget.AdapterView<?> parent, View view,
-                                        int position, long id) {
-                if (first) { first = false; return; }
-                setMonitorCount(position + 1);
-            }
-
-            @Override
-            public void onNothingSelected(android.widget.AdapterView<?> parent) {}
+        menu.getMenu().setGroupCheckable(0, true, true);
+        menu.setOnMenuItemClickListener(item -> {
+            setMonitorCount(item.getItemId());
+            return true;
         });
-        return spinner;
+        menu.show();
     }
 
     private void setMonitorCount(int requestedCount) {
         final int count = Math.max(1, Math.min(MAX_MONITORS, requestedCount));
+        monitorCount = count;
         Log.i(TAG, "setting monitor count to " + count);
 
         for (int i = 1; i < count; i++) {
