@@ -84,7 +84,8 @@ void NetServer::accept_loop() {
 
         char ip[INET_ADDRSTRLEN] = {0};
         ::inet_ntop(AF_INET, &peer.sin_addr, ip, sizeof(ip));
-        std::fprintf(stderr, "[net] client connected: %s\n", ip);
+        std::fprintf(stderr, "[net:%u] client connected: %s\n",
+                     static_cast<unsigned>(port_), ip);
 
         if (!send_all(fd, &header_, sizeof(header_))) {
             ::close(fd);
@@ -122,7 +123,8 @@ void NetServer::broadcast(const proto::FrameHeader& fh,
         bool ok = send_all(c.fd, &fh, sizeof(fh)) &&
                   send_all(c.fd, payload, fh.payload_size);
         if (!ok) {
-            std::fprintf(stderr, "[net] client dropped\n");
+            std::fprintf(stderr, "[net:%u] client dropped\n",
+                         static_cast<unsigned>(port_));
             ::close(c.fd);
             it = clients_.erase(it);
         } else {

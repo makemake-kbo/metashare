@@ -15,8 +15,11 @@ namespace metashare {
 
 DiscoveryResponder::~DiscoveryResponder() { stop(); }
 
-bool DiscoveryResponder::start(std::uint16_t stream_port, std::string& err) {
+bool DiscoveryResponder::start(std::uint16_t stream_port,
+                               std::uint16_t monitor_count,
+                               std::string& err) {
     stream_port_ = stream_port;
+    monitor_count_ = monitor_count;
     fd_ = ::socket(AF_INET, SOCK_DGRAM, 0);
     if (fd_ < 0) {
         err = std::string("discovery socket: ") + std::strerror(errno);
@@ -76,15 +79,17 @@ void DiscoveryResponder::serve_loop() {
         std::memcpy(offer.magic, proto::kDiscoveryMagic, sizeof(offer.magic));
         offer.version = proto::kProtocolVersion;
         offer.stream_port = stream_port_;
-        offer.reserved = 0;
+        offer.monitor_count = monitor_count_;
         if (::gethostname(offer.host_name, sizeof(offer.host_name)) != 0)
             std::snprintf(offer.host_name, sizeof(offer.host_name), "metashare");
         offer.host_name[sizeof(offer.host_name) - 1] = '\0';
 
         char ip[INET_ADDRSTRLEN] = {0};
         ::inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
-        std::fprintf(stderr, "[discovery] probe from %s -> offering port %u\n",
-                     ip, static_cast<unsigned>(stream_port_));
+        std::fprintf(stderr,
+                     "[discovery] probe from %s -> offering port %u (%u monitors)\n",
+                     ip, static_cast<unsigned>(stream_port_),
+                     static_cast<unsigned>(monitor_count_));
 
         ::sendto(fd_, &offer, sizeof(offer), 0,
                  reinterpret_cast<sockaddr*>(&from), flen);

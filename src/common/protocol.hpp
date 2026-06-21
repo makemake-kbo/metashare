@@ -37,8 +37,8 @@ struct DiscoveryProbe {
 struct DiscoveryOffer {
     char magic[8];              // kDiscoveryMagic
     std::uint32_t version;      // kProtocolVersion
-    std::uint16_t stream_port;  // TCP port to connect to
-    std::uint16_t reserved;
+    std::uint16_t stream_port;  // TCP base port (monitor i is at stream_port + i)
+    std::uint16_t monitor_count;// number of available monitors (0 → 1)
     char host_name[64];         // human-readable, NUL-terminated
 } __attribute__((packed));
 

@@ -19,7 +19,8 @@ public:
     DiscoveryResponder(const DiscoveryResponder&) = delete;
     DiscoveryResponder& operator=(const DiscoveryResponder&) = delete;
 
-    bool start(std::uint16_t stream_port, std::string& err);
+    bool start(std::uint16_t stream_port, std::uint16_t monitor_count,
+               std::string& err);
     void stop();
 
 private:
@@ -27,6 +28,7 @@ private:
 
     int fd_ = -1;
     std::uint16_t stream_port_ = 0;
+    std::uint16_t monitor_count_ = 1;
     std::atomic<bool> running_{false};
     std::thread thread_;
 };

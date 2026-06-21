@@ -12,7 +12,7 @@ namespace metashare {
 
 class TestPatternSource final : public FrameSource {
 public:
-    explicit TestPatternSource(SourceFormat fmt);
+    explicit TestPatternSource(SourceFormat fmt, int monitor_index = 0);
     ~TestPatternSource() override;
 
     bool start(std::string& err) override;
@@ -22,6 +22,7 @@ public:
 
 private:
     SourceFormat fmt_;
+    int monitor_index_;
     AVFrame* frame_ = nullptr;
     std::int64_t frame_index_ = 0;
     std::chrono::steady_clock::time_point start_time_{};

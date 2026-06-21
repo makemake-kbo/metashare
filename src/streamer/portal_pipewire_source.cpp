@@ -186,12 +186,17 @@ bool PortalPipeWireSource::run_portal(int& pw_fd, std::uint32_t& node_id,
 
     const sdbus::ObjectPath session{portal_->session_handle};
 
-    // 2) SelectSources — monitors, embedded cursor.
+    // 2) SelectSources — configurable via opts_. Default is MONITOR + single +
+    // METADATA cursor (so the cursor comes as PipeWire stream metadata, not
+    // baked into pixels). The VIRTUAL type lets the portal create a brand-new
+    // virtual monitor under Mutter (which is the only way to create virtual
+    // monitor space on a stock GNOME user session — Mutter blocks direct
+    // RecordVirtual calls there).
     {
         VarMap opts;
-        opts["types"] = sdbus::Variant(std::uint32_t{1});       // 1=MONITOR
-        opts["multiple"] = sdbus::Variant(false);
-        opts["cursor_mode"] = sdbus::Variant(std::uint32_t{2});  // 2=EMBEDDED
+        opts["types"] = sdbus::Variant(opts_.source_types);
+        opts["multiple"] = sdbus::Variant(opts_.multiple);
+        opts["cursor_mode"] = sdbus::Variant(opts_.cursor_mode);
         VarMap res;
         auto call = [&](VarMap& options) {
             sdbus::ObjectPath handle;
@@ -286,12 +291,12 @@ void cb_state_changed(void* data, enum pw_stream_state old,
                  error ? error : "");
 }
 
-const struct pw_stream_events kStreamEvents = {
-    .version = PW_VERSION_STREAM_EVENTS,
-    .state_changed = cb_state_changed,
-    .param_changed = cb_param_changed,
-    .process = cb_process,
-};
+    static struct pw_stream_events kStreamEvents = {
+        .version = PW_VERSION_STREAM_EVENTS,
+        .state_changed = cb_state_changed,
+        .param_changed = cb_param_changed,
+        .process = cb_process,
+    };
 
 }  // namespace
 
@@ -306,12 +311,27 @@ void PortalPipeWireSource::on_param_changed(const struct spa_pod* param) {
 
     const int w = info.info.raw.size.width;
     const int h = info.info.raw.size.height;
-    negotiated_fmt_ = spa_to_av(info.info.raw.format);
-    if (negotiated_fmt_ == AV_PIX_FMT_NONE) {
+    const int new_fmt = spa_to_av(info.info.raw.format);
+    if (new_fmt == AV_PIX_FMT_NONE) {
         std::fprintf(stderr, "[pipewire] unsupported format %u\n",
                      info.info.raw.format);
         return;
     }
+
+    // Skip reallocation if nothing changed — PipeWire re-sends the same format
+    // repeatedly on virtual monitors, and each realloc causes a brief dropout
+    // (flicker) plus a use-after-free race with the capture thread.
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (negotiated_fmt_ == new_fmt && fmt_.width == w && fmt_.height == h &&
+            front_ && back_) {
+            negotiated_fmt_ = new_fmt;
+            // Still need to reply with buffer params.
+            goto reply_params;
+        }
+    }
+
+    negotiated_fmt_ = new_fmt;
 
     {
         std::lock_guard<std::mutex> lk(mu_);
@@ -328,6 +348,8 @@ void PortalPipeWireSource::on_param_changed(const struct spa_pod* param) {
     }
     std::fprintf(stderr, "[pipewire] negotiated %dx%d fmt=%d\n", w, h,
                  negotiated_fmt_);
+
+reply_params:;
 
     // Reply with buffer params: request CPU-mappable buffers.
     std::uint8_t buf[1024];
@@ -373,8 +395,15 @@ void PortalPipeWireSource::on_process() {
 //  FrameSource interface
 // ===========================================================================
 
-PortalPipeWireSource::PortalPipeWireSource(int fps_hint) : fps_hint_(fps_hint) {
-    fmt_.fps_num = fps_hint;
+PortalPipeWireSource::PortalPipeWireSource(int fps_hint)
+    : opts_{/*fps_hint=*/fps_hint} {
+    fmt_.fps_num = opts_.fps_hint;
+    fmt_.fps_den = 1;
+}
+
+PortalPipeWireSource::PortalPipeWireSource(const PortalOptions& opts)
+    : opts_(opts) {
+    fmt_.fps_num = opts_.fps_hint;
     fmt_.fps_den = 1;
 }
 
@@ -410,15 +439,14 @@ bool PortalPipeWireSource::start(std::string& err) {
         PW_KEY_MEDIA_ROLE, "Screen", nullptr);
     stream_ = pw_stream_new(core_, "metashare-capture", props);
 
-    static struct spa_hook listener;
-    pw_stream_add_listener(stream_, &listener, &kStreamEvents, this);
+    pw_stream_add_listener(stream_, &stream_listener_, &kStreamEvents, this);
 
     std::uint8_t buf[1024];
     struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buf, sizeof(buf));
     auto rect = SPA_RECTANGLE(1920, 1080);
     auto rmin = SPA_RECTANGLE(1, 1);
     auto rmax = SPA_RECTANGLE(8192, 8192);
-    auto frate = SPA_FRACTION(static_cast<std::uint32_t>(fps_hint_), 1);
+    auto frate = SPA_FRACTION(static_cast<std::uint32_t>(opts_.fps_hint), 1);
     auto fmin = SPA_FRACTION(0, 1);
     auto fmax = SPA_FRACTION(240, 1);
     const struct spa_pod* params[1];

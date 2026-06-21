@@ -27,5 +27,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          Secondary streaming windows. Standard launch mode is required so that
+          FLAG_ACTIVITY_MULTIPLE_TASK creates a new task/window each time.
+        -->
+        <activity
+            android:name=".MonitorActivity"
+            android:exported="false"
+            android:resizeableActivity="true"
+            android:screenOrientation="landscape"
+            android:configChanges="screenSize|screenLayout|orientation|keyboardHidden|keyboard|navigation|uiMode|density" />
     </application>
 </manifest>

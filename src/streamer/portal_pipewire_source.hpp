@@ -24,6 +24,8 @@
 
 #include "frame_source.hpp"
 
+#include <spa/utils/hook.h>
+
 struct pw_thread_loop;
 struct pw_context;
 struct pw_core;
@@ -37,9 +39,24 @@ namespace metashare {
 // this header.
 struct PortalState;
 
+// Controls what the portal asks the user for in SelectSources.
+//   source_types : bitmask of xdg-desktop-portal AvailableSourceTypes
+//                  (1=MONITOR, 2=WINDOW, 4=VIRTUAL).
+//   multiple     : let the user pick more than one source (only meaningful
+//                  when capturing several existing monitors; VIRTUAL typically
+//                  yields one stream per session).
+//   cursor_mode  : 0=HIDDEN, 1=EMBEDDED, 2=METADATA.
+struct PortalOptions {
+    int fps_hint = 60;
+    std::uint32_t source_types = 1;  // MONITOR by default
+    bool multiple = false;
+    std::uint32_t cursor_mode = 2;   // METADATA (cursor as PipeWire metadata)
+};
+
 class PortalPipeWireSource final : public FrameSource {
 public:
     explicit PortalPipeWireSource(int fps_hint);
+    explicit PortalPipeWireSource(const PortalOptions& opts);
     ~PortalPipeWireSource() override;
 
     bool start(std::string& err) override;
@@ -57,13 +74,14 @@ private:
     bool run_portal(int& pw_fd, std::uint32_t& node_id, std::string& err);
 
     SourceFormat fmt_{};
-    int fps_hint_ = 60;
+    PortalOptions opts_;
     std::unique_ptr<PortalState> portal_;
 
     pw_thread_loop* loop_ = nullptr;
     pw_context* context_ = nullptr;
     pw_core* core_ = nullptr;
     pw_stream* stream_ = nullptr;
+    struct spa_hook stream_listener_;  // per-instance; must NOT be static
     int pw_fd_ = -1;
 
     int negotiated_fmt_ = -1;  // AVPixelFormat once a format is negotiated

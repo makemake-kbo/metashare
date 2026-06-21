@@ -5,3 +5,11 @@
 #     meson setup build -Dportal=enabled
 option('portal', type : 'feature', value : 'auto',
   description : 'Enable Wayland screencast capture (xdg-desktop-portal + PipeWire)')
+
+# Mutter ScreenCast virtual-monitor source. Talks directly to
+# org.gnome.Mutter.ScreenCast over D-Bus (no portal dialog), creates virtual
+# monitors via RecordVirtual, and connects to PipeWire on the default socket
+# (GNOME 44+ flow). Shares the sdbus-c++/pipewire deps with the portal source.
+# Also builds the standalone Phase 0 PoC tool `mutter_virtual_dump`.
+option('mutter', type : 'feature', value : 'auto',
+  description : 'Enable Mutter ScreenCast virtual-monitor source (GNOME 44+)')

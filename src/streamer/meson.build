@@ -20,18 +20,50 @@ streamer_deps = [
 
 streamer_args = []
 
-# Optional real Wayland capture: xdg-desktop-portal (sdbus-c++) + PipeWire.
+# Both the xdg-desktop-portal source and the Mutter ScreenCast source need
+# sdbus-c++ + libpipewire. Either being enabled makes them hard requirements.
 portal_opt = get_option('portal')
-sdbus_dep = dependency('sdbus-c++', required : portal_opt)
-pipewire_dep = dependency('libpipewire-0.3', required : portal_opt)
+mutter_opt = get_option('mutter')
+need_dbus_pw = portal_opt.enabled() or mutter_opt.enabled()
 
-if not portal_opt.disabled() and sdbus_dep.found() and pipewire_dep.found()
+sdbus_dep   = dependency('sdbus-c++',        required : need_dbus_pw)
+pipewire_dep = dependency('libpipewire-0.3', required : need_dbus_pw)
+have_dbus_pw = sdbus_dep.found() and pipewire_dep.found()
+
+# --- xdg-desktop-portal capture (any compliant Wayland compositor) ----------
+if not portal_opt.disabled() and have_dbus_pw
   streamer_srcs += files('portal_pipewire_source.cpp')
   streamer_deps += [sdbus_dep, pipewire_dep]
   streamer_args += '-DMETASHARE_HAVE_PORTAL'
   message('Wayland portal capture: ENABLED')
 else
   message('Wayland portal capture: disabled (test-pattern source only)')
+endif
+
+# --- Mutter ScreenCast virtual-monitor source (GNOME 44+) -------------------
+if not mutter_opt.disabled() and have_dbus_pw
+  streamer_srcs += files(
+    'mutter_screencast.cpp',
+    'mutter_virtual_source.cpp',
+  )
+  streamer_deps += [sdbus_dep, pipewire_dep]
+  streamer_args += '-DMETASHARE_HAVE_MUTTER'
+  message('Mutter ScreenCast virtual-monitor source: ENABLED')
+
+  # Phase 0 standalone PoC tool: creates one virtual monitor (or captures an
+  # existing one) and dumps a single frame as a PPM. Default mode is
+  # portal-virtual, which works on any GNOME 44+ user session; mutter-direct
+  # requires system/headless Mutter where session-creation isn't inhibited.
+  executable('mutter_virtual_dump',
+    ['mutter_virtual_dump.cpp',
+     'mutter_screencast.cpp',
+     'mutter_virtual_source.cpp',
+     'portal_pipewire_source.cpp'],
+    include_directories : common_inc,
+    dependencies : [threads_dep, avutil_dep, sdbus_dep, pipewire_dep],
+    cpp_args : ['-DMETASHARE_HAVE_MUTTER', '-DMETASHARE_HAVE_PORTAL'])
+else
+  message('Mutter ScreenCast virtual-monitor source: disabled')
 endif
 
 executable('metashare-streamer',
