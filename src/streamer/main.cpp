@@ -1,6 +1,7 @@
 // MetaShare streamer CLI.
 //
-// Pipeline:  FrameSource -> Encoder (H.264) -> NetServer (TCP) -> client(s)
+// Pipeline:  FrameSource -> Encoder (HEVC HW, H.264 SW fallback) -> NetServer
+//            (TCP) -> client(s)
 //            DiscoveryResponder (UDP) lets clients find us with no config.
 
 #include <atomic>
@@ -39,6 +40,8 @@ struct Options {
     int height = 1080;
     int fps = 60;
     int bitrate_kbps = 15000;
+    std::string codec = "hevc";   // "hevc" (default) or "h264"
+    bool hardware = true;         // try VAAPI/NVENC before software
     std::uint16_t port = proto::kStreamPort;
     bool discovery = true;
 };
@@ -52,6 +55,9 @@ void usage(const char* argv0) {
         "  --height <px>           test-source height (default 1080)\n"
         "  --fps <n>              frame rate (default 60)\n"
         "  --bitrate <kbps>       encoder bitrate (default 15000)\n"
+        "  --codec <hevc|h264>    preferred codec (default hevc; falls back to\n"
+        "                          software h264 if no hw hevc encoder is found)\n"
+        "  --no-hw                skip VAAPI/NVENC; force software encoding\n"
         "  --port <n>             TCP stream port (default %u)\n"
         "  --no-discovery         disable UDP discovery responder\n"
         "  -h, --help             this help\n",
@@ -72,6 +78,11 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--height") { if (!val(o.height)) return false; }
         else if (a == "--fps") { if (!val(o.fps)) return false; }
         else if (a == "--bitrate") { if (!val(o.bitrate_kbps)) return false; }
+        else if (a == "--codec" && i + 1 < argc) {
+            o.codec = argv[++i];
+            if (o.codec != "hevc" && o.codec != "h264") return false;
+        }
+        else if (a == "--no-hw") o.hardware = false;
         else if (a == "--port") { int p; if (!val(p)) return false; o.port = static_cast<std::uint16_t>(p); }
         else if (a == "--no-discovery") o.discovery = false;
         else { std::fprintf(stderr, "unknown arg: %s\n", a.c_str()); return false; }
@@ -123,10 +134,16 @@ int main(int argc, char** argv) {
     ecfg.fps_num = fmt.fps_num;
     ecfg.fps_den = fmt.fps_den;
     ecfg.bitrate_kbps = opt.bitrate_kbps;
+    ecfg.prefer_hardware = opt.hardware;
+    ecfg.preferred_codec =
+        opt.codec == "hevc" ? proto::Codec::kH265 : proto::Codec::kH264;
     if (!enc.open(ecfg, err)) {
         std::fprintf(stderr, "encoder open failed: %s\n", err.c_str());
         return 1;
     }
+    std::fprintf(stderr, "[streamer] encoder: %s (%s)%s\n", enc.codec_name(),
+                 enc.codec() == proto::Codec::kH265 ? "HEVC" : "H.264",
+                 enc.using_hardware() ? " hw" : " sw");
 
     NetServer server;
     proto::StreamHeader sh{};

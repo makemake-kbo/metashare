@@ -62,7 +62,7 @@ bool discover(std::string& host, std::uint16_t& port, int timeout_ms) {
     proto::DiscoveryProbe probe{};
     std::memcpy(probe.magic, proto::kDiscoveryMagic, sizeof(probe.magic));
     probe.version = proto::kProtocolVersion;
-    probe.client_caps = proto::kCapH264;
+    probe.client_caps = proto::kCapH264 | proto::kCapH265;
 
     std::fprintf(stderr, "[client] broadcasting discovery probe...\n");
     // Send to the global broadcast AND each interface's directed broadcast, so
@@ -178,12 +178,16 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "[client] stream %ux%u codec=%u\n", sh.width, sh.height,
                  sh.codec);
 
-    const AVCodec* dec = avcodec_find_decoder(AV_CODEC_ID_H264);
+    const bool hevc = sh.codec == static_cast<std::uint32_t>(proto::Codec::kH265);
+    AVCodecID dec_id = hevc ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264;
+    const AVCodec* dec = avcodec_find_decoder(dec_id);
     AVCodecContext* dctx = avcodec_alloc_context3(dec);
     if (!dec || !dctx || avcodec_open2(dctx, dec, nullptr) < 0) {
-        std::fprintf(stderr, "[client] decoder init failed\n");
+        std::fprintf(stderr, "[client] decoder init failed for %s\n",
+                     hevc ? "HEVC" : "H.264");
         return 1;
     }
+    std::fprintf(stderr, "[client] decoding %s\n", hevc ? "HEVC" : "H.264");
     AVPacket* pkt = av_packet_alloc();
     AVFrame* frame = av_frame_alloc();
 

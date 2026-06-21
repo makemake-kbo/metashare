@@ -51,7 +51,9 @@ bool NetStream::discover(int timeout_ms) {
     proto::DiscoveryProbe probe{};
     std::memcpy(probe.magic, proto::kDiscoveryMagic, sizeof(probe.magic));
     probe.version = proto::kProtocolVersion;
-    probe.client_caps = proto::kCapH264;
+    // The Quest 3 has hardware decoders for both H.264 and HEVC; advertise both
+    // so the streamer can pick whichever its hardware encode path supports.
+    probe.client_caps = proto::kCapH264 | proto::kCapH265;
 
     auto send_to = [&](in_addr_t ip) {
         sockaddr_in d{};

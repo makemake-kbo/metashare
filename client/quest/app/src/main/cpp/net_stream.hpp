@@ -1,6 +1,7 @@
 // Discovery + TCP receive for the Quest client. Portable POSIX C++ (works as-is
-// on Android); reuses the shared wire protocol. Decoded-independent: it only
-// produces encoded H.264 access units for the Decoder to consume.
+// on Android); reuses the shared wire protocol. Decode-independent: it only
+// produces encoded access units (H.264 or HEVC, per the stream header) for the
+// Decoder to consume.
 
 #pragma once
 

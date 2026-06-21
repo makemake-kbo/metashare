@@ -12,15 +12,18 @@ namespace metashare {
 
 Decoder::~Decoder() { close(); }
 
-bool Decoder::open(int width, int height, ANativeWindow* surface,
+bool Decoder::open(int width, int height, bool hevc, ANativeWindow* surface,
                    std::string& err) {
-    codec_ = AMediaCodec_createDecoderByType("video/avc");
+    hevc_ = hevc;
+    const char* mime = hevc ? "video/hevc" : "video/avc";
+    codec_ = AMediaCodec_createDecoderByType(mime);
     if (!codec_) {
-        err = "AMediaCodec_createDecoderByType(video/avc) failed";
+        err = std::string("AMediaCodec_createDecoderByType(") + mime +
+              ") failed";
         return false;
     }
     AMediaFormat* fmt = AMediaFormat_new();
-    AMediaFormat_setString(fmt, AMEDIAFORMAT_KEY_MIME, "video/avc");
+    AMediaFormat_setString(fmt, AMEDIAFORMAT_KEY_MIME, mime);
     AMediaFormat_setInt32(fmt, AMEDIAFORMAT_KEY_WIDTH, width);
     AMediaFormat_setInt32(fmt, AMEDIAFORMAT_KEY_HEIGHT, height);
     // Low-latency decode where the device supports it (Quest 3 does).
@@ -39,6 +42,7 @@ bool Decoder::open(int width, int height, ANativeWindow* surface,
         return false;
     }
     started_ = true;
+    LOG("decoder opened: %s %dx%d", mime, width, height);
     return true;
 }
 
@@ -97,6 +101,7 @@ void Decoder::close() {
         codec_ = nullptr;
     }
     started_ = false;
+    hevc_ = false;
     fed_count_ = 0;
     rendered_count_ = 0;
 }

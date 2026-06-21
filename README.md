@@ -5,14 +5,15 @@ floating Horizon OS app window — an open re-creation of Meta Remote Desktop fo
 Linux.
 
 The host runs a modern C++ CLI **streamer** that captures the Wayland session,
-encodes it to H.264, and serves it over the LAN. The Quest **client** is a
-standard resizable Android app, so Horizon OS presents it as a floating system
-window. A **desktop test client** mirrors the stream path so the pipeline can be
-developed and verified without headset hardware.
+encodes it with **hardware HEVC when available** (VAAPI on Intel/AMD, NVENC on
+NVIDIA, falling back to software H.264), and serves it over the LAN. The Quest
+**client** is a standard resizable Android app, so Horizon OS presents it as a
+floating system window. A **desktop test client** mirrors the stream path so the
+pipeline can be developed and verified without headset hardware.
 
 ```
  ┌──────────────────────── Linux host ────────────────────────┐        ┌──────── Quest ──────────┐
- │ xdg-desktop-portal ─▶ PipeWire ─▶ Encoder(H.264) ─▶ TCP ────┼──LAN──▶│ TCP ─▶ MediaCodec ─▶     │
+ │ xdg-desktop-portal ─▶ PipeWire ─▶ Encoder(HEVC HW) ─▶ TCP ─┼──LAN──▶│ TCP ─▶ MediaCodec ─▶     │
  │            ▲ user picks a monitor          UDP discovery ◀──┼────────┤ Android SurfaceView     │
  └────────────────────────────────────────────────────────────┘        └─────────────────────────┘
 ```
@@ -22,7 +23,8 @@ developed and verified without headset hardware.
 | Component                              | State                              |
 | -------------------------------------- | ---------------------------------- |
 | Nix dev environment (`flake.nix`)      | ✅ working                         |
-| H.264 encoder (libavcodec / x264)      | ✅ working                         |
+| Hardware HEVC encoder (VAAPI/NVENC)    | ✅ working — auto-selected at runtime |
+| Software H.264 fallback (libx264)      | ✅ working                         |
 | TCP frame server + UDP discovery       | ✅ working                         |
 | Test-pattern capture source            | ✅ working (verified end-to-end)   |
 | Wayland capture (portal + PipeWire)    | ✅ builds; needs a Wayland session |
@@ -30,8 +32,9 @@ developed and verified without headset hardware.
 | GTK4 streamer control panel            | ✅ working — see `client/gtk`       |
 | Quest Android 2D client                | ✅ working — see `client/quest`     |
 
-Hardware (VAAPI/NVENC) encoding is the next planned step; today the encoder is
-portable software x264 tuned for zero-latency.
+At startup the streamer probes hardware HEVC encoders (`hevc_vaapi`,
+`hevc_nvenc`) and silently falls back to software `libx264` if neither can be
+opened, so the same binary works on any host with a usable ffmpeg.
 
 ## Quick start
 
@@ -62,6 +65,7 @@ ninja -C build
 ```
 
 Key flags: `--source test|portal`, `--width/--height/--fps`, `--bitrate <kbps>`,
+`--codec hevc|h264` (default `hevc`), `--no-hw` (force software H.264),
 `--port <n>` (default 7778), `--no-discovery`. See `--help`.
 
 ### Run the desktop test client
@@ -101,8 +105,9 @@ by the streamer and both clients:
 
 - **Discovery (UDP):** `DiscoveryProbe` → `DiscoveryOffer`.
 - **Stream (TCP):** one `StreamHeader` (codec, resolution, fps), then a
-  sequence of `FrameHeader` + encoded H.264 access unit. SPS/PPS are kept
-  in-band before each keyframe so a client can join mid-stream.
+  sequence of `FrameHeader` + encoded access unit (H.264 or HEVC, Annex-B).
+  SPS/PPS (and VPS for HEVC) are kept in-band before each keyframe so a client
+  can join mid-stream.
 
 ## Layout
 
@@ -114,7 +119,7 @@ src/streamer/                 The CLI streamer
   frame_source.hpp            Capture-backend interface
   test_pattern_source.*       Synthetic source (no desktop needed)
   portal_pipewire_source.*    Real Wayland capture (xdg-desktop-portal + PipeWire)
-  encoder.*                   Low-latency H.264 (libavcodec)
+  encoder.*                   Low-latency encoder (HEVC HW / H.264 SW fallback)
   net_server.*                TCP fan-out to clients
   discovery.*                 UDP discovery responder
   main.cpp                    Pipeline + CLI

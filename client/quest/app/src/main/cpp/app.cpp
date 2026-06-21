@@ -508,7 +508,9 @@ bool QuestClient::create_stream_assets() {
         swapchain_, ic, &ic,
         reinterpret_cast<XrSwapchainImageBaseHeader*>(images_.data()));
 
-    if (!decoder_.open(sw_w_, sw_h_, renderer_.decode_window(), err)) {
+    if (!decoder_.open(sw_w_, sw_h_,
+                       h.codec == static_cast<std::uint32_t>(proto::Codec::kH265),
+                       renderer_.decode_window(), err)) {
         LOGE("decoder open failed: %s", err.c_str());
         return false;
     }

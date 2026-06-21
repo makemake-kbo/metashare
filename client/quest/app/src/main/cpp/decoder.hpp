@@ -1,8 +1,12 @@
-// Hardware H.264 decode via the Android NDK MediaCodec API.
+// Hardware video decode via the Android NDK MediaCodec API.
 //
 // MediaCodec decodes directly onto an ANativeWindow (from a SurfaceTexture),
 // so decoded frames stay on the GPU as a GL_TEXTURE_EXTERNAL_OES texture that
 // the OpenXR renderer samples into the quad-layer swapchain image.
+//
+// Both H.264 (video/avc) and HEVC (video/hevc) are supported; the Quest 3 has
+// hardware decoders for both. The mime is picked from the StreamHeader codec
+// field at open() time.
 //
 // Builds against the Android NDK only (media/NDKMediaCodec.h).
 
@@ -22,7 +26,9 @@ public:
     ~Decoder();
 
     // surface: ANativeWindow from the SurfaceTexture the renderer reads from.
-    bool open(int width, int height, ANativeWindow* surface, std::string& err);
+    // hevc:    pick the HEVC hardware decoder; otherwise H.264.
+    bool open(int width, int height, bool hevc, ANativeWindow* surface,
+              std::string& err);
     void close();
 
     // Queue one encoded access unit (Annex-B). pts in microseconds.
@@ -33,9 +39,12 @@ public:
     // frame was rendered (the SurfaceTexture now has fresh content).
     bool drain_to_surface();
 
+    bool is_hevc() const { return hevc_; }
+
 private:
     AMediaCodec* codec_ = nullptr;
     bool started_ = false;
+    bool hevc_ = false;
     std::uint32_t fed_count_ = 0;
     std::uint32_t rendered_count_ = 0;
 };
