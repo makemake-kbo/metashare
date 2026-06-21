@@ -40,6 +40,14 @@ modules:
   # from a git checkout (released tarballs ship it pre-generated).
   - name: mm-common
     buildsystem: meson
+    # mm-common fetches a libstdc++ doctag file at build time. That needs both
+    # the meson `use-network` switch and an unsandboxed network, neither of
+    # which is on by default in the flatpak build sandbox.
+    config-opts:
+      - -Duse-network=true
+    build-options:
+      build-args:
+        - --share=network
     sources:
       - type: git
         url: https://gitlab.gnome.org/GNOME/mm-common.git
