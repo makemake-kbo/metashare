@@ -1,0 +1,21 @@
+# Shared module: ffmpeg with the libx264 encoder enabled.
+#
+# Built into /app so it shadows the runtime's codec-restricted ffmpeg (which has
+# no x264 encoder). VAAPI is enabled too so hardware HEVC/H.264 can be picked
+# when the host exposes a render node (--device=dri in the manifests).
+#
+# Depends on modules/x264.yml — list it *before* this one in the manifest.
+name: ffmpeg
+buildsystem: simple
+build-commands:
+  - >-
+    ./configure --prefix=/app
+    --disable-static --enable-shared --enable-pic
+    --disable-programs --disable-doc
+    --enable-gpl --enable-libx264 --enable-vaapi
+  - make -j$(nproc)
+  - make install
+sources:
+  - type: git
+    url: https://github.com/FFmpeg/FFmpeg.git
+    tag: n7.1

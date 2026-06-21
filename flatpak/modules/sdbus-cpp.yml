@@ -1,0 +1,16 @@
+# Shared module: sdbus-c++ (D-Bus client used for the portal / Mutter sources).
+#
+# Not present in either runtime. We pin the v1.x series to match the API the
+# code is written against (nixpkgs ships sdbus-c++ v1). It links the runtime's
+# libsystemd for sd-bus — both the freedesktop and GNOME SDKs provide it.
+name: sdbus-cpp
+buildsystem: cmake-ninja
+config-opts:
+  # v1.x option names (v2 renamed these with an SDBUSCPP_ prefix).
+  - -DBUILD_CODE_GEN=OFF
+  - -DBUILD_DOC=OFF
+  - -DBUILD_TESTS=OFF
+sources:
+  - type: git
+    url: https://github.com/Kistler-Group/sdbus-cpp.git
+    tag: v1.5.0

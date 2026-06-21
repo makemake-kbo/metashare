@@ -1,0 +1,18 @@
+# Shared module: x264 encoder library.
+#
+# The freedesktop/GNOME runtimes ship ffmpeg *without* the GPL libx264 encoder,
+# but encoder.cpp uses "libx264" as its universal software fallback ("build
+# ffmpeg with libx264 at minimum"). So we vendor x264 here and build our own
+# ffmpeg (modules/ffmpeg.yml) against it.
+name: x264
+buildsystem: simple
+build-commands:
+  - ./configure --prefix=/app --enable-shared --disable-cli --enable-pic
+  - make -j$(nproc)
+  - make install
+sources:
+  - type: git
+    url: https://code.videolan.org/videolan/x264.git
+    # x264 cuts no version tags; the long-lived `stable` branch is the project's
+    # recommended pin point.
+    branch: stable

@@ -1,0 +1,103 @@
+# GUI Flatpak: the GTK4 control panel plus the streamer it launches.
+#
+# Runs on the GNOME runtime (gives us GTK4/glib/cairo/pango), but the gtkmm
+# C++ bindings are *not* in the runtime, so the binding chain is vendored
+# below. Builds both `metashare-streamer-ui` and `metashare-streamer`; the
+# SDL2 test client auto-skips (no SDL2).
+#
+# Build it via the flake:  nix run .#flatpak-ui
+app-id: dev.metashare.StreamerUI
+runtime: org.gnome.Platform
+runtime-version: '47'
+sdk: org.gnome.Sdk
+command: metashare-streamer-ui
+
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=network
+  - --share=ipc
+  - --device=dri
+  - --filesystem=xdg-run/pipewire-0
+  - --talk-name=org.freedesktop.portal.Desktop
+
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /lib/cmake
+  - /share/man
+  - /share/doc
+  - '*.a'
+  - '*.la'
+
+modules:
+  - modules/x264.yml
+  - modules/ffmpeg.yml
+  - modules/sdbus-cpp.yml
+
+  # --- gtkmm-4 binding chain (absent from org.gnome.Platform) --------------
+  # mm-common provides the build scaffolding the GNOME bindings need when built
+  # from a git checkout (released tarballs ship it pre-generated).
+  - name: mm-common
+    buildsystem: meson
+    sources:
+      - type: git
+        url: https://gitlab.gnome.org/GNOME/mm-common.git
+        tag: '1.0.6'
+
+  - name: libsigc++-3
+    buildsystem: meson
+    config-opts:
+      - -Dbuild-examples=false
+    sources:
+      - type: git
+        url: https://github.com/libsigcplusplus/libsigcplusplus.git
+        tag: '3.6.0'
+
+  - name: glibmm
+    buildsystem: meson
+    config-opts:
+      - -Dbuild-examples=false
+    sources:
+      - type: git
+        url: https://gitlab.gnome.org/GNOME/glibmm.git
+        tag: '2.82.0'
+
+  - name: cairomm
+    buildsystem: meson
+    config-opts:
+      - -Dbuild-examples=false
+      - -Dbuild-tests=false
+    sources:
+      - type: git
+        url: https://gitlab.freedesktop.org/cairo/cairomm.git
+        tag: '1.18.0'
+
+  - name: pangomm
+    buildsystem: meson
+    config-opts:
+      - -Dbuild-examples=false
+    sources:
+      - type: git
+        url: https://gitlab.gnome.org/GNOME/pangomm.git
+        tag: '2.56.0'
+
+  - name: gtkmm
+    buildsystem: meson
+    config-opts:
+      - -Dbuild-demos=false
+      - -Dbuild-tests=false
+    sources:
+      - type: git
+        url: https://gitlab.gnome.org/GNOME/gtkmm.git
+        tag: '4.16.0'
+
+  # --- the app itself -------------------------------------------------------
+  - name: metashare
+    buildsystem: meson
+    config-opts:
+      - -Dportal=enabled
+      - -Dmutter=disabled
+    sources:
+      - type: dir
+        path: ..

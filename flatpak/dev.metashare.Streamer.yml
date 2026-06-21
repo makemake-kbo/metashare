@@ -1,0 +1,46 @@
+# CLI-only Flatpak: the headless MetaShare Wayland streamer.
+#
+# Lean freedesktop runtime (no GNOME stack) — the GTK4 frontend auto-skips
+# because gtkmm isn't present, so this builds just `metashare-streamer`.
+#
+# Build it via the flake:  nix run .#flatpak-cli
+app-id: dev.metashare.Streamer
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: metashare-streamer
+
+finish-args:
+  # Streams to the Quest/desktop clients over the LAN (ports 7777/7778).
+  - --share=network
+  - --share=ipc
+  # VAAPI hardware encode when a render node is available.
+  - --device=dri
+  # Wayland screencast: portal hands back a PipeWire remote we connect to.
+  - --filesystem=xdg-run/pipewire-0
+  - --talk-name=org.freedesktop.portal.Desktop
+
+# Drop build-only cruft from the final tree.
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /lib/cmake
+  - /share/man
+  - '*.a'
+  - '*.la'
+
+modules:
+  - modules/x264.yml
+  - modules/ffmpeg.yml
+  - modules/sdbus-cpp.yml
+
+  - name: metashare
+    buildsystem: meson
+    config-opts:
+      # Real Wayland capture via xdg-desktop-portal; Mutter-direct D-Bus is
+      # blocked inside the sandbox, so keep it off.
+      - -Dportal=enabled
+      - -Dmutter=disabled
+    sources:
+      - type: dir
+        path: ..
