@@ -54,6 +54,54 @@ meson setup build -Dportal=enabled
 ninja -C build
 ```
 
+## Installing as an app (Nix)
+
+The flake exposes a `metashare` package with the streamer, the desktop test
+client, and the GTK4 control panel plus its GNOME `.desktop` entry. The Nix
+build forces `-Dportal=enabled` so the resulting binary does real Wayland
+capture.
+
+```sh
+# Run ad-hoc without installing:
+nix run .#ui            # GNOME control panel
+nix run .#streamer      # CLI streamer
+nix run .#testclient    # SDL2 test client
+
+# Or build a cached result symlink:
+nix build .#metashare   # → ./result/bin/{metashare-streamer,metashare-streamer-ui,…}
+
+# Or install into your user profile (binaries land in ~/.nix-profile/bin,
+# the .desktop entry in ~/.nix-profile/share/applications, so GNOME picks
+# them up automatically):
+nix profile install .#metashare
+```
+
+After `nix profile install`, "MetaShare Streamer" appears in the GNOME app
+grid. The control panel spawns the `metashare-streamer` binary that ships in
+the same package — no extra PATH setup needed.
+
+### NixOS / Home Manager
+
+To install system-wide on NixOS:
+
+```nix
+environment.systemPackages = [
+  metashare-flake.packages.x86_64-linux.default
+];
+```
+
+Or under Home Manager:
+
+```nix
+home.packages = [
+  metashare-flake.packages.x86_64-linux.default
+];
+```
+
+The streamer needs a running `xdg-desktop-portal` (and a portal impl such as
+`xdg-desktop-portal-gnome` or `xdg-desktop-portal-wlr`) to capture a Wayland
+monitor. GNOME provides this out of the box.
+
 ### Run the streamer
 
 ```sh
