@@ -61,6 +61,50 @@
           # Meson already installs it to share/applications/.
         };
 
+        # Flake-driven Flatpak build. The flatpak-builder manifests under
+        # ./flatpak are the source of truth (portable: they build metashare from
+        # source against a flatpak runtime). This wrapper just gives them a
+        # `nix run` entrypoint so the flake "drives" the flatpak output:
+        #   nix run .#flatpak-cli   -> dev.metashare.Streamer.flatpak
+        #   nix run .#flatpak-ui    -> dev.metashare.StreamerUI.flatpak
+        mkFlatpakApp = { name, appId, manifest }:
+          pkgs.writeShellApplication {
+            inherit name;
+            runtimeInputs = with pkgs; [ flatpak flatpak-builder git coreutils ];
+            text = ''
+              set -euo pipefail
+              root="$(git rev-parse --show-toplevel)"
+              cd "$root"
+              state="$(mktemp -d)"
+              trap 'rm -rf "$state"' EXIT
+
+              echo ">> Ensuring the flathub remote (per-user)"
+              flatpak --user remote-add --if-not-exists flathub \
+                https://dl.flathub.org/repo/flathub.flatpakrepo
+
+              echo ">> Building ${appId} with flatpak-builder"
+              flatpak-builder --user --force-clean --disable-rofiles-fuse \
+                --install-deps-from=flathub \
+                --repo="$state/repo" "$state/build" "flatpak/${manifest}"
+
+              out="${appId}.flatpak"
+              echo ">> Exporting single-file bundle: $out"
+              flatpak build-bundle "$state/repo" "$out" "${appId}"
+              echo ">> Wrote $root/$out"
+            '';
+          };
+
+        flatpakCli = mkFlatpakApp {
+          name = "metashare-flatpak-cli";
+          appId = "dev.metashare.Streamer";
+          manifest = "dev.metashare.Streamer.yml";
+        };
+        flatpakUi = mkFlatpakApp {
+          name = "metashare-flatpak-ui";
+          appId = "dev.metashare.StreamerUI";
+          manifest = "dev.metashare.StreamerUI.yml";
+        };
+
       in
       {
         packages.default = metashare;
@@ -82,11 +126,23 @@
         };
         apps.default = self.apps.${system}.ui;
 
+        # `nix run .#flatpak-cli` / `.#flatpak-ui` — build distributable Flatpaks
+        apps.flatpak-cli = {
+          type = "app";
+          program = "${flatpakCli}/bin/metashare-flatpak-cli";
+        };
+        apps.flatpak-ui = {
+          type = "app";
+          program = "${flatpakUi}/bin/metashare-flatpak-ui";
+        };
+
         devShells.default = pkgs.mkShell {
           packages = nativeDeps ++ runtimeDeps ++ (with pkgs; [
             gdb
             clang-tools   # clang-format / clangd
             wayland-utils
+            flatpak           # `nix run .#flatpak-{cli,ui}` and manual testing
+            flatpak-builder
           ]);
 
           shellHook = ''

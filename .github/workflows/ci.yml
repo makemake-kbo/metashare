@@ -71,11 +71,89 @@ jobs:
           name: metashare-quest-apk
           path: dist/metashare-quest.apk
 
-  # --- Release: publish the APK whenever a tag is pushed --------------------
+  # --- Build the CLI-only Flatpak via the flake -----------------------------
+  flatpak-cli:
+    name: Build CLI Flatpak
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # Ubuntu 24.04 runners restrict unprivileged user namespaces via AppArmor,
+      # which breaks bubblewrap (flatpak-builder's sandbox). Relax it.
+      - name: Allow unprivileged user namespaces (bubblewrap)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      # Cache the per-user flatpak install (runtimes/SDKs) and the builder's
+      # ccache/source cache so we don't re-download/rebuild deps every run.
+      - name: Cache flatpak runtimes + builder cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.local/share/flatpak
+            ~/.cache/flatpak-builder
+          key: flatpak-cli-${{ runner.os }}-${{ hashFiles('flatpak/dev.metashare.Streamer.yml', 'flatpak/modules/*') }}
+          restore-keys: flatpak-cli-${{ runner.os }}-
+
+      - name: Build flatpak bundle
+        run: nix run .#flatpak-cli --print-build-logs
+
+      - name: Stage bundle
+        run: |
+          mkdir -p dist
+          cp dev.metashare.Streamer.flatpak dist/
+
+      - name: Upload flatpak artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: metashare-flatpak-cli
+          path: dist/dev.metashare.Streamer.flatpak
+
+  # --- Build the GUI (GTK4 control panel) Flatpak via the flake -------------
+  flatpak-ui:
+    name: Build GUI Flatpak
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Allow unprivileged user namespaces (bubblewrap)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Cache flatpak runtimes + builder cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.local/share/flatpak
+            ~/.cache/flatpak-builder
+          key: flatpak-ui-${{ runner.os }}-${{ hashFiles('flatpak/dev.metashare.StreamerUI.yml', 'flatpak/modules/*') }}
+          restore-keys: flatpak-ui-${{ runner.os }}-
+
+      - name: Build flatpak bundle
+        run: nix run .#flatpak-ui --print-build-logs
+
+      - name: Stage bundle
+        run: |
+          mkdir -p dist
+          cp dev.metashare.StreamerUI.flatpak dist/
+
+      - name: Upload flatpak artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: metashare-flatpak-ui
+          path: dist/dev.metashare.StreamerUI.flatpak
+
+  # --- Release: publish the APK + Flatpaks whenever a tag is pushed ----------
   release:
     name: Publish release
     if: github.ref_type == 'tag'
-    needs: [check, apk]
+    needs: [check, apk, flatpak-cli, flatpak-ui]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -84,13 +162,25 @@ jobs:
         with:
           name: metashare-quest-apk
           path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: metashare-flatpak-cli
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: metashare-flatpak-ui
+          path: dist
 
-      - name: Name the asset after the tag
+      - name: Name the assets after the tag
         run: |
           mv dist/metashare-quest.apk "dist/metashare-quest-${GITHUB_REF_NAME}.apk"
+          mv dist/dev.metashare.Streamer.flatpak "dist/metashare-streamer-${GITHUB_REF_NAME}.flatpak"
+          mv dist/dev.metashare.StreamerUI.flatpak "dist/metashare-streamer-ui-${GITHUB_REF_NAME}.flatpak"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.apk
+          files: |
+            dist/*.apk
+            dist/*.flatpak
           generate_release_notes: true

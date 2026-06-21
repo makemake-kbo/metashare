@@ -6,7 +6,19 @@ Mirror a Linux **Wayland** session to a **Meta Quest** and view it as a
 floating Horizon OS app window. An open re-creation of Meta Remote Desktop for
 Linux.
 
+This doesnt use any quest specific libraries or SDKs, so it should also work on other headsets like the pico. Untested, YMMV.
+
 ## Quick start
+
+### Client
+
+Get the `.apk` from the latest releases and install it via ADB or sidequest.
+
+### Flatpak
+
+The easiest way of getting the server running is via flatpak. See the releases page and grab the cli or the (barebones) UI version.
+
+### Nix
 
 Builds are happening using nix. Please get nix if u dont to ensure all deps are in place:
 ```sh
