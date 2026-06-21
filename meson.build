@@ -18,3 +18,4 @@ common_inc = include_directories('src/common')
 
 subdir('src/streamer')
 subdir('client/desktop_test')
+subdir('client/gtk')

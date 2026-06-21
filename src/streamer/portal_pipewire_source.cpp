@@ -5,10 +5,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <map>
 #include <random>
+#include <sys/stat.h>
 #include <thread>
 #include <vector>
 
@@ -123,10 +125,35 @@ bool portal_request(sdbus::IConnection& conn, const std::string& unique_name,
 bool PortalPipeWireSource::run_portal(int& pw_fd, std::uint32_t& node_id,
                                       std::string& err) {
     portal_ = std::make_unique<PortalState>();
+
+    // The portal source requires a D-Bus session bus (it talks to
+    // xdg-desktop-portal over it). Pre-flight the env so we can give an
+    // actionable error instead of the cryptic sdbus "ENOMEDIUM" message.
+    if (!std::getenv("DBUS_SESSION_BUS_ADDRESS")) {
+        const char* xdg = std::getenv("XDG_RUNTIME_DIR");
+        bool bus_socket_present = false;
+        if (xdg) {
+            std::string sock = std::string(xdg) + "/bus";
+            struct stat st;
+            bus_socket_present = (::stat(sock.c_str(), &st) == 0);
+        }
+        if (!bus_socket_present) {
+            err =
+                "no D-Bus session bus available. The portal source needs "
+                "xdg-desktop-portal over D-Bus. Either run from a graphical "
+                "session (GNOME/KDE/Sway/etc.), or prefix your command with "
+                "'dbus-run-session' (and make sure xdg-desktop-portal is "
+                "actually running in that bus).";
+            return false;
+        }
+    }
+
     try {
         portal_->conn = sdbus::createSessionBusConnection();
     } catch (const sdbus::Error& e) {
-        err = std::string("cannot connect to session bus: ") + e.what();
+        err = std::string("cannot connect to session bus: ") + e.what() +
+              " (check that dbus-daemon is running and "
+              "DBUS_SESSION_BUS_ADDRESS is set)";
         return false;
     }
     portal_->conn->enterEventLoopAsync();

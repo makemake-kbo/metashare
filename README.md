@@ -27,6 +27,7 @@ developed and verified without headset hardware.
 | Test-pattern capture source            | ✅ working (verified end-to-end)   |
 | Wayland capture (portal + PipeWire)    | ✅ builds; needs a Wayland session |
 | Desktop test client (SDL2)             | ✅ working                         |
+| GTK4 streamer control panel            | ✅ working — see `client/gtk`       |
 | Quest Android 2D client                | ✅ working — see `client/quest`     |
 
 Hardware (VAAPI/NVENC) encoding is the next planned step; today the encoder is
@@ -75,6 +76,16 @@ Key flags: `--source test|portal`, `--width/--height/--fps`, `--bitrate <kbps>`,
 
 Press `Esc` to quit.
 
+### Run the GTK4 control panel
+
+A modern GNOME/GTK4 launcher (`client/gtk`) for the streamer. It lets you pick
+resolution (with a locked aspect ratio), fps, bitrate, codec, hardware-accel and
+port; "Start Stream" spawns the streamer as a subprocess and surfaces its log.
+
+```sh
+./build/client/gtk/metashare-streamer-ui
+```
+
 ## How discovery works
 
 Zero-config by design. The streamer listens on **UDP 7777**. The client
@@ -108,6 +119,7 @@ src/streamer/                 The CLI streamer
   discovery.*                 UDP discovery responder
   main.cpp                    Pipeline + CLI
 client/desktop_test/          SDL2 reference client (validates the stream)
+client/gtk/                   GTK4 streamer control panel (launcher only)
 client/quest/                 Quest Android 2D client — see its README
 ```
 

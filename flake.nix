@@ -19,6 +19,7 @@
           systemd            # provides libsystemd.pc that sdbus-c++ requires
           libdrm             # DMA-BUF frame import
           SDL2               # desktop test client window/render
+          gtkmm4             # GTK4 control panel (client/gtk)
         ];
 
         nativeDeps = with pkgs; [
@@ -51,6 +52,7 @@
             echo "MetaShare dev shell — run: meson setup build && ninja -C build"
             echo "Streamer: ./build/src/streamer/metashare-streamer"
             echo "Test client: ./build/client/desktop_test/metashare-testclient"
+            echo "GTK4 control panel: ./build/client/gtk/metashare-streamer-ui"
           '';
         };
 
