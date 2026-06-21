@@ -64,8 +64,11 @@ modules:
 
   - name: glibmm
     buildsystem: meson
+    # Documentation generation pulls in doxygen/graphviz `dot`, which isn't in
+    # the GNOME SDK; skip it (we only need the libraries).
     config-opts:
       - -Dbuild-examples=false
+      - -Dbuild-documentation=false
     sources:
       - type: git
         url: https://gitlab.gnome.org/GNOME/glibmm.git
@@ -76,6 +79,7 @@ modules:
     config-opts:
       - -Dbuild-examples=false
       - -Dbuild-tests=false
+      - -Dbuild-documentation=false
     sources:
       - type: git
         url: https://gitlab.freedesktop.org/cairo/cairomm.git
@@ -85,6 +89,7 @@ modules:
     buildsystem: meson
     config-opts:
       - -Dbuild-examples=false
+      - -Dbuild-documentation=false
     sources:
       - type: git
         url: https://gitlab.gnome.org/GNOME/pangomm.git
@@ -95,6 +100,7 @@ modules:
     config-opts:
       - -Dbuild-demos=false
       - -Dbuild-tests=false
+      - -Dbuild-documentation=false
     sources:
       - type: git
         url: https://gitlab.gnome.org/GNOME/gtkmm.git
