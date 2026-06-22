@@ -1,6 +1,6 @@
 # MetaShare
 
-<img width="1600" height="900" alt="" src="https://github.com/user-attachments/assets/e0545698-e204-4ccc-a434-8956f32d5fd4" />
+<img width="1600" height="900" alt="" src="https://github.com/user-attachments/assets/6d28533d-1dfa-4b4b-8624-268b944ea96d" />
 
 Mirror a Linux **Wayland** session to a **Meta Quest** and view it as a
 floating Horizon OS app window. An open re-creation of Meta Remote Desktop for
