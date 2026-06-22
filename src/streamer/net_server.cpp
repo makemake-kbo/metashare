@@ -50,7 +50,10 @@ bool NetServer::start(std::uint16_t port, std::string& err) {
 
 void NetServer::stop() {
     if (!running_.exchange(false)) {
-        if (listen_fd_ >= 0) { ::close(listen_fd_); listen_fd_ = -1; }
+        if (listen_fd_ >= 0) {
+            ::close(listen_fd_);
+            listen_fd_ = -1;
+        }
         return;
     }
     if (listen_fd_ >= 0) {
@@ -70,7 +73,8 @@ void NetServer::accept_loop() {
     while (running_) {
         sockaddr_in peer{};
         socklen_t plen = sizeof(peer);
-        int fd = ::accept(listen_fd_, reinterpret_cast<sockaddr*>(&peer), &plen);
+        int fd =
+            ::accept(listen_fd_, reinterpret_cast<sockaddr*>(&peer), &plen);
         if (fd < 0) {
             if (!running_) break;
             if (errno == EINTR) continue;
@@ -117,7 +121,10 @@ void NetServer::broadcast(const proto::FrameHeader& fh,
     for (auto it = clients_.begin(); it != clients_.end();) {
         Client& c = *it;
         if (!c.ready) {
-            if (!key) { ++it; continue; }  // wait for a clean entry point
+            if (!key) {
+                ++it;
+                continue;
+            }  // wait for a clean entry point
             c.ready = true;
         }
         bool ok = send_all(c.fd, &fh, sizeof(fh)) &&

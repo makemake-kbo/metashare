@@ -21,10 +21,10 @@ std::string av_err(int e) {
 
 // One candidate codec the encoder will try to open, in priority order.
 struct Candidate {
-    const char* name;             // ffmpeg encoder name
-    proto::Codec codec;           // wire codec it produces
-    AVHWDeviceType hw_type;       // AV_HWDEVICE_TYPE_NONE if no device needed
-    bool hardware;                // true if a HW accelerator (for reporting)
+    const char* name;        // ffmpeg encoder name
+    proto::Codec codec;      // wire codec it produces
+    AVHWDeviceType hw_type;  // AV_HWDEVICE_TYPE_NONE if no device needed
+    bool hardware;           // true if a HW accelerator (for reporting)
 };
 
 // Build the ordered list to probe for a given config. Software H.264 is always
@@ -45,7 +45,8 @@ std::vector<Candidate> build_candidates(const EncoderConfig& cfg) {
         // rather than software HEVC, since x264 is faster and universally
         // available in our build.)
     }
-    list.push_back({"libx264", proto::Codec::kH264, AV_HWDEVICE_TYPE_NONE, false});
+    list.push_back(
+        {"libx264", proto::Codec::kH264, AV_HWDEVICE_TYPE_NONE, false});
     return list;
 }
 
@@ -76,8 +77,8 @@ bool Encoder::open(const EncoderConfig& cfg, std::string& err) {
         ctx->time_base = AVRational{1, 1'000'000};
         ctx->framerate = AVRational{cfg.fps_num, cfg.fps_den};
         ctx->bit_rate = static_cast<std::int64_t>(cfg.bitrate_kbps) * 1000;
-        ctx->gop_size = cfg.keyint_seconds * cfg.fps_num /
-                        (cfg.fps_den ? cfg.fps_den : 1);
+        ctx->gop_size =
+            cfg.keyint_seconds * cfg.fps_num / (cfg.fps_den ? cfg.fps_den : 1);
         ctx->max_b_frames = 0;
         // Keep SPS/PPS/VPS in-band (repeated before keyframes) so late joiners
         // can decode without any out-of-band header exchange.
@@ -89,7 +90,8 @@ bool Encoder::open(const EncoderConfig& cfg, std::string& err) {
         std::string step_err;
 
         if (c.hw_type != AV_HWDEVICE_TYPE_NONE) {
-            int rc = av_hwdevice_ctx_create(&hw, c.hw_type, nullptr, nullptr, 0);
+            int rc =
+                av_hwdevice_ctx_create(&hw, c.hw_type, nullptr, nullptr, 0);
             if (rc < 0) {
                 step_err = std::string("hwdevice_ctx_create: ") + av_err(rc);
                 ok = false;
@@ -103,8 +105,8 @@ bool Encoder::open(const EncoderConfig& cfg, std::string& err) {
                     step_err = "av_hwframe_ctx_alloc failed";
                     ok = false;
                 } else {
-                    auto* fc = reinterpret_cast<AVHWFramesContext*>(
-                        hw_frames->data);
+                    auto* fc =
+                        reinterpret_cast<AVHWFramesContext*>(hw_frames->data);
                     fc->format = AV_PIX_FMT_VAAPI;
                     fc->sw_format = AV_PIX_FMT_NV12;
                     fc->width = cfg.width;
@@ -191,7 +193,10 @@ bool Encoder::open(const EncoderConfig& cfg, std::string& err) {
 }
 
 void Encoder::close() {
-    if (sws_) { sws_freeContext(sws_); sws_ = nullptr; }
+    if (sws_) {
+        sws_freeContext(sws_);
+        sws_ = nullptr;
+    }
     if (conv_) av_frame_free(&conv_);
     if (pkt_) av_packet_free(&pkt_);
     if (ctx_) avcodec_free_context(&ctx_);
@@ -209,17 +214,16 @@ bool Encoder::encode(AVFrame* frame, std::int64_t pts_usec,
     AVFrame* enc_in = frame;
 
     // Convert to the codec's input format unless the source already matches.
-    const bool needs_convert =
-        frame->format != conv_fmt_ ||
-        frame->width != cfg_.width ||
-        frame->height != cfg_.height;
+    const bool needs_convert = frame->format != conv_fmt_ ||
+                               frame->width != cfg_.width ||
+                               frame->height != cfg_.height;
     if (needs_convert) {
         if (!sws_ || sws_src_fmt_ != frame->format) {
             if (sws_) sws_freeContext(sws_);
-            sws_ = sws_getContext(
-                frame->width, frame->height,
-                static_cast<AVPixelFormat>(frame->format), cfg_.width,
-                cfg_.height, conv_fmt_, SWS_BILINEAR, nullptr, nullptr, nullptr);
+            sws_ = sws_getContext(frame->width, frame->height,
+                                  static_cast<AVPixelFormat>(frame->format),
+                                  cfg_.width, cfg_.height, conv_fmt_,
+                                  SWS_BILINEAR, nullptr, nullptr, nullptr);
             if (!sws_) {
                 err = "sws_getContext failed";
                 return false;
@@ -243,7 +247,10 @@ bool Encoder::encode(AVFrame* frame, std::int64_t pts_usec,
     AVFrame* hw_up = nullptr;
     if (hw_frames_) {
         hw_up = av_frame_alloc();
-        if (!hw_up) { err = "hw frame alloc failed"; return false; }
+        if (!hw_up) {
+            err = "hw frame alloc failed";
+            return false;
+        }
         hw_up->format = AV_PIX_FMT_VAAPI;
         hw_up->width = cfg_.width;
         hw_up->height = cfg_.height;
@@ -282,8 +289,7 @@ bool Encoder::drain(const PacketSink& sink, std::string& err) {
             return false;
         }
         const bool key = (pkt_->flags & AV_PKT_FLAG_KEY) != 0;
-        sink(pkt_->data, static_cast<std::size_t>(pkt_->size),
-             pkt_->pts, key);
+        sink(pkt_->data, static_cast<std::size_t>(pkt_->size), pkt_->pts, key);
         av_packet_unref(pkt_);
     }
 }

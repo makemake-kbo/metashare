@@ -25,12 +25,14 @@
 #include <string>
 #include <vector>
 
-namespace sdbus { class IConnection; }
+namespace sdbus {
+class IConnection;
+}
 
 namespace metashare {
 
 class MutterScreenCastSession {
-public:
+  public:
     MutterScreenCastSession();
     ~MutterScreenCastSession();
 
@@ -57,13 +59,13 @@ public:
     struct MonitorInfo {
         int width = 0;
         int height = 0;
-        std::string stream_path;  // D-Bus object path of the Mutter stream
+        std::string stream_path;    // D-Bus object path of the Mutter stream
         std::uint32_t node_id = 0;  // PipeWire node id, valid after start()
     };
 
     const std::vector<MonitorInfo>& monitors() const { return monitors_; }
 
-private:
+  private:
     bool check_version(std::string& err);
 
     std::unique_ptr<sdbus::IConnection> conn_;

@@ -64,16 +64,22 @@ struct Options {
 };
 
 void usage(const char* argv0) {
-    std::fprintf(stderr,
+    std::fprintf(
+        stderr,
         "MetaShare streamer — mirror a Wayland session to a Quest 3 client.\n\n"
         "Usage: %s [options]\n"
-        "  --source <test|portal|mutter>  capture backend (default depends on build)\n"
+        "  --source <test|portal|mutter>  capture backend (default depends on "
+        "build)\n"
         "                                test:   synthetic test patterns\n"
-        "                                portal: xdg-desktop-portal (any compositor)\n"
-        "                                mutter: GNOME direct — physical monitor\n"
-        "                                        for window 0 (via portal) plus\n"
+        "                                portal: xdg-desktop-portal (any "
+        "compositor)\n"
+        "                                mutter: GNOME direct — physical "
+        "monitor\n"
+        "                                        for window 0 (via portal) "
+        "plus\n"
         "                                        N-1 Mutter virtual monitors\n"
-        "                                        (is-platform=true, apps can be\n"
+        "                                        (is-platform=true, apps can "
+        "be\n"
         "                                        moved onto them)\n"
         "  --monitors <n>          number of monitors (default 1)\n"
         "  --width <px>            virtual-monitor width (default 1920)\n"
@@ -96,8 +102,10 @@ bool parse_args(int argc, char** argv, Options& o) {
             dst = std::atoi(argv[++i]);
             return true;
         };
-        if (a == "-h" || a == "--help") { usage(argv[0]); std::exit(0); }
-        else if (a == "--source" && i + 1 < argc) {
+        if (a == "-h" || a == "--help") {
+            usage(argv[0]);
+            std::exit(0);
+        } else if (a == "--source" && i + 1 < argc) {
             o.source = argv[++i];
             if (o.source != "test" && o.source != "portal" &&
                 o.source != "mutter") {
@@ -116,20 +124,31 @@ bool parse_args(int argc, char** argv, Options& o) {
                 return false;
             }
 #endif
-        }
-        else if (a == "--monitors") { if (!val(o.monitors)) return false; }
-        else if (a == "--width") { if (!val(o.width)) return false; }
-        else if (a == "--height") { if (!val(o.height)) return false; }
-        else if (a == "--fps") { if (!val(o.fps)) return false; }
-        else if (a == "--bitrate") { if (!val(o.bitrate_kbps)) return false; }
-        else if (a == "--codec" && i + 1 < argc) {
+        } else if (a == "--monitors") {
+            if (!val(o.monitors)) return false;
+        } else if (a == "--width") {
+            if (!val(o.width)) return false;
+        } else if (a == "--height") {
+            if (!val(o.height)) return false;
+        } else if (a == "--fps") {
+            if (!val(o.fps)) return false;
+        } else if (a == "--bitrate") {
+            if (!val(o.bitrate_kbps)) return false;
+        } else if (a == "--codec" && i + 1 < argc) {
             o.codec = argv[++i];
             if (o.codec != "hevc" && o.codec != "h264") return false;
+        } else if (a == "--no-hw")
+            o.hardware = false;
+        else if (a == "--port") {
+            int p;
+            if (!val(p)) return false;
+            o.port = static_cast<std::uint16_t>(p);
+        } else if (a == "--no-discovery")
+            o.discovery = false;
+        else {
+            std::fprintf(stderr, "unknown arg: %s\n", a.c_str());
+            return false;
         }
-        else if (a == "--no-hw") o.hardware = false;
-        else if (a == "--port") { int p; if (!val(p)) return false; o.port = static_cast<std::uint16_t>(p); }
-        else if (a == "--no-discovery") o.discovery = false;
-        else { std::fprintf(stderr, "unknown arg: %s\n", a.c_str()); return false; }
     }
     if (o.monitors < 1) o.monitors = 1;
     if (o.monitors > 8) o.monitors = 8;
@@ -146,14 +165,14 @@ struct Pipeline {
     std::atomic<bool> running{false};
 };
 
-std::unique_ptr<FrameSource> make_source(
-        const Options& o, int monitor_index,
+std::unique_ptr<FrameSource>
+make_source(const Options& o, int monitor_index,
 #ifdef METASHARE_HAVE_MUTTER
-        MutterScreenCastSession* mutter_session,
+            MutterScreenCastSession* mutter_session,
 #else
-        void* /*mutter_session*/,
+            void* /*mutter_session*/,
 #endif
-        std::string& err) {
+            std::string& err) {
     if (o.source == "test") {
         SourceFormat f{o.width, o.height, o.fps, 1};
         return std::make_unique<TestPatternSource>(f, monitor_index);
@@ -162,7 +181,7 @@ std::unique_ptr<FrameSource> make_source(
 #ifdef METASHARE_HAVE_PORTAL
         if (o.monitors > 1) {
             PortalOptions opts;
-            opts.source_types = 4;   // VIRTUAL
+            opts.source_types = 4;  // VIRTUAL
             opts.fps_hint = o.fps;
             return std::make_unique<PortalPipeWireSource>(opts);
         }
@@ -179,7 +198,7 @@ std::unique_ptr<FrameSource> make_source(
         if (monitor_index == 0) {
 #ifdef METASHARE_HAVE_PORTAL
             PortalOptions opts;
-            opts.source_types = 1;   // MONITOR
+            opts.source_types = 1;  // MONITOR
             opts.fps_hint = o.fps;
             return std::make_unique<PortalPipeWireSource>(opts);
 #else
@@ -195,15 +214,14 @@ std::unique_ptr<FrameSource> make_source(
         // Mutter's RecordVirtual under the hood.
 #ifdef METASHARE_HAVE_MUTTER
         if (mutter_session) {
-            return std::make_unique<MutterVirtualSource>(*mutter_session,
-                                                          monitor_index - 1,
-                                                          o.fps);
+            return std::make_unique<MutterVirtualSource>(
+                *mutter_session, monitor_index - 1, o.fps);
         }
 #endif
 #ifdef METASHARE_HAVE_PORTAL
         {
             PortalOptions opts;
-            opts.source_types = 4;   // VIRTUAL
+            opts.source_types = 4;  // VIRTUAL
             opts.fps_hint = o.fps;
             return std::make_unique<PortalPipeWireSource>(opts);
         }
@@ -219,7 +237,10 @@ std::unique_ptr<FrameSource> make_source(
 
 int main(int argc, char** argv) {
     Options opt;
-    if (!parse_args(argc, argv, opt)) { usage(argv[0]); return 2; }
+    if (!parse_args(argc, argv, opt)) {
+        usage(argv[0]);
+        return 2;
+    }
 
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
@@ -242,13 +263,15 @@ int main(int argc, char** argv) {
     std::unique_ptr<MutterScreenCastSession> mutter_session;
     if (opt.source == "mutter" && opt.monitors > 1 &&
         std::getenv("METASHARE_MUTTER_DIRECT")) {
-        std::fprintf(stderr,
+        std::fprintf(
+            stderr,
             "[mutter] attempting direct Mutter ScreenCast (experimental;\n"
             "  works on system/headless Mutter, usually inhibited on user "
             "sessions).\n");
         mutter_session = std::make_unique<MutterScreenCastSession>();
         if (!mutter_session->open(err)) {
-            std::fprintf(stderr,
+            std::fprintf(
+                stderr,
                 "[mutter] session open failed: %s — falling back to portal.\n",
                 err.c_str());
             mutter_session.reset();
@@ -258,9 +281,9 @@ int main(int argc, char** argv) {
                     opt.width, opt.height, err);
                 if (idx < 0) {
                     std::fprintf(stderr,
-                        "[mutter] add_virtual_monitor(%d) failed: %s\n"
-                        "  — falling back to portal.\n",
-                        i, err.c_str());
+                                 "[mutter] add_virtual_monitor(%d) failed: %s\n"
+                                 "  — falling back to portal.\n",
+                                 i, err.c_str());
                     mutter_session.reset();
                     break;
                 }
@@ -268,11 +291,13 @@ int main(int argc, char** argv) {
             if (mutter_session) {
                 if (!mutter_session->start(err)) {
                     std::fprintf(stderr,
-                        "[mutter] session start failed: %s\n"
-                        "  — falling back to portal.\n", err.c_str());
+                                 "[mutter] session start failed: %s\n"
+                                 "  — falling back to portal.\n",
+                                 err.c_str());
                     mutter_session.reset();
                 } else {
-                    std::fprintf(stderr,
+                    std::fprintf(
+                        stderr,
                         "[mutter] %d virtual monitor(s) ready via direct API\n",
                         opt.monitors - 1);
                 }
@@ -298,8 +323,8 @@ int main(int argc, char** argv) {
             return 1;
         }
         if (!p->source->start(err)) {
-            std::fprintf(stderr, "[monitor %d] source start failed: %s\n",
-                         i, err.c_str());
+            std::fprintf(stderr, "[monitor %d] source start failed: %s\n", i,
+                         err.c_str());
             return 1;
         }
         const SourceFormat fmt = p->source->format();
@@ -318,13 +343,14 @@ int main(int argc, char** argv) {
         ecfg.preferred_codec =
             opt.codec == "hevc" ? proto::Codec::kH265 : proto::Codec::kH264;
         if (!p->encoder->open(ecfg, err)) {
-            std::fprintf(stderr, "[monitor %d] encoder open failed: %s\n",
-                         i, err.c_str());
+            std::fprintf(stderr, "[monitor %d] encoder open failed: %s\n", i,
+                         err.c_str());
             return 1;
         }
         std::fprintf(stderr, "[monitor %d] encoder: %s (%s)%s\n", i,
                      p->encoder->codec_name(),
-                     p->encoder->codec() == proto::Codec::kH265 ? "HEVC" : "H.264",
+                     p->encoder->codec() == proto::Codec::kH265 ? "HEVC"
+                                                                : "H.264",
                      p->encoder->using_hardware() ? " hw" : " sw");
 
         // --- server ---
@@ -340,8 +366,8 @@ int main(int argc, char** argv) {
         p->server->set_stream_header(sh);
         const std::uint16_t port = static_cast<std::uint16_t>(opt.port + i);
         if (!p->server->start(port, err)) {
-            std::fprintf(stderr, "[monitor %d] server start failed: %s\n",
-                         i, err.c_str());
+            std::fprintf(stderr, "[monitor %d] server start failed: %s\n", i,
+                         err.c_str());
             return 1;
         }
         std::fprintf(stderr, "[monitor %d] serving on tcp/%u\n", i,
@@ -353,14 +379,14 @@ int main(int argc, char** argv) {
     // --- discovery ---
     DiscoveryResponder discovery;
     if (opt.discovery) {
-        if (!discovery.start(opt.port,
-                             static_cast<std::uint16_t>(opt.monitors), err))
+        if (!discovery.start(opt.port, static_cast<std::uint16_t>(opt.monitors),
+                             err))
             std::fprintf(stderr, "warning: discovery disabled: %s\n",
                          err.c_str());
         else
-            std::fprintf(stderr, "[streamer] discovery on udp/%u (%d monitors)\n",
-                         static_cast<unsigned>(proto::kDiscoveryPort),
-                         opt.monitors);
+            std::fprintf(
+                stderr, "[streamer] discovery on udp/%u (%d monitors)\n",
+                static_cast<unsigned>(proto::kDiscoveryPort), opt.monitors);
     }
 
     // --- capture threads ---
@@ -410,8 +436,7 @@ int main(int argc, char** argv) {
 
     std::fprintf(stderr, "[streamer] %d monitor(s) running — Ctrl-C to stop\n",
                  opt.monitors);
-    while (!g_stop)
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    while (!g_stop) std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     std::fprintf(stderr, "\n[streamer] shutting down\n");
     discovery.stop();

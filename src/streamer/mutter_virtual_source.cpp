@@ -22,11 +22,11 @@ namespace {
 
 AVPixelFormat spa_to_av(std::uint32_t spa_fmt) {
     switch (spa_fmt) {
-        case SPA_VIDEO_FORMAT_BGRA: return AV_PIX_FMT_BGRA;
-        case SPA_VIDEO_FORMAT_RGBA: return AV_PIX_FMT_RGBA;
-        case SPA_VIDEO_FORMAT_BGRx: return AV_PIX_FMT_BGR0;
-        case SPA_VIDEO_FORMAT_RGBx: return AV_PIX_FMT_RGB0;
-        default: return AV_PIX_FMT_NONE;
+    case SPA_VIDEO_FORMAT_BGRA: return AV_PIX_FMT_BGRA;
+    case SPA_VIDEO_FORMAT_RGBA: return AV_PIX_FMT_RGBA;
+    case SPA_VIDEO_FORMAT_BGRx: return AV_PIX_FMT_BGR0;
+    case SPA_VIDEO_FORMAT_RGBx: return AV_PIX_FMT_RGB0;
+    default: return AV_PIX_FMT_NONE;
     }
 }
 
@@ -50,7 +50,8 @@ const struct pw_stream_events kStreamEvents = {
     .state_changed = cb_state_changed,
     .param_changed = cb_param_changed,
     .process = cb_process,
-};}  // namespace
+};
+}  // namespace
 
 void MutterVirtualSource::on_param_changed(const struct spa_pod* param) {
     struct spa_video_info info{};
@@ -90,12 +91,13 @@ void MutterVirtualSource::on_param_changed(const struct spa_pod* param) {
     std::uint8_t buf[1024];
     struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buf, sizeof(buf));
     const struct spa_pod* params[1];
-    params[0] = reinterpret_cast<const struct spa_pod*>(spa_pod_builder_add_object(
-        &b, SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
-        SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(4, 2, 8),
-        SPA_PARAM_BUFFERS_dataType,
-        SPA_POD_CHOICE_FLAGS_Int((1u << SPA_DATA_MemPtr) |
-                                 (1u << SPA_DATA_MemFd))));
+    params[0] =
+        reinterpret_cast<const struct spa_pod*>(spa_pod_builder_add_object(
+            &b, SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
+            SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(4, 2, 8),
+            SPA_PARAM_BUFFERS_dataType,
+            SPA_POD_CHOICE_FLAGS_Int((1u << SPA_DATA_MemPtr) |
+                                     (1u << SPA_DATA_MemFd))));
     pw_stream_update_params(stream_, params, 1);
 }
 
@@ -109,13 +111,13 @@ void MutterVirtualSource::on_process() {
             const auto& d = sbuf->datas[0];
             const int src_stride =
                 d.chunk->stride ? d.chunk->stride : back_->linesize[0];
-            const auto* src = static_cast<const std::uint8_t*>(d.data) +
-                              d.chunk->offset;
-            av_image_copy_plane(back_->data[0], back_->linesize[0], src,
-                                src_stride,
-                                std::min(src_stride, back_->linesize[0]),
-                                back_->height);
-            const auto now = std::chrono::steady_clock::now().time_since_epoch();
+            const auto* src =
+                static_cast<const std::uint8_t*>(d.data) + d.chunk->offset;
+            av_image_copy_plane(
+                back_->data[0], back_->linesize[0], src, src_stride,
+                std::min(src_stride, back_->linesize[0]), back_->height);
+            const auto now =
+                std::chrono::steady_clock::now().time_since_epoch();
             pts_usec_ =
                 std::chrono::duration_cast<std::chrono::microseconds>(now)
                     .count();
@@ -133,9 +135,7 @@ void MutterVirtualSource::on_process() {
 
 MutterVirtualSource::MutterVirtualSource(MutterScreenCastSession& session,
                                          int monitor_idx, int fps_hint)
-    : session_(session),
-      monitor_idx_(monitor_idx),
-      fps_hint_(fps_hint) {
+    : session_(session), monitor_idx_(monitor_idx), fps_hint_(fps_hint) {
     fmt_.fps_num = fps_hint;
     fmt_.fps_den = 1;
 }
@@ -159,9 +159,15 @@ bool MutterVirtualSource::start(std::string& err) {
 
     pw_init(nullptr, nullptr);
     loop_ = pw_thread_loop_new("metashare-mutter", nullptr);
-    if (!loop_) { err = "pw_thread_loop_new failed"; return false; }
+    if (!loop_) {
+        err = "pw_thread_loop_new failed";
+        return false;
+    }
     context_ = pw_context_new(pw_thread_loop_get_loop(loop_), nullptr, 0);
-    if (!context_) { err = "pw_context_new failed"; return false; }
+    if (!context_) {
+        err = "pw_context_new failed";
+        return false;
+    }
 
     pw_thread_loop_lock(loop_);
     if (pw_thread_loop_start(loop_) < 0) {
@@ -178,9 +184,9 @@ bool MutterVirtualSource::start(std::string& err) {
         return false;
     }
 
-    struct pw_properties* props = pw_properties_new(
-        PW_KEY_MEDIA_TYPE, "Video", PW_KEY_MEDIA_CATEGORY, "Capture",
-        PW_KEY_MEDIA_ROLE, "Screen", nullptr);
+    struct pw_properties* props =
+        pw_properties_new(PW_KEY_MEDIA_TYPE, "Video", PW_KEY_MEDIA_CATEGORY,
+                          "Capture", PW_KEY_MEDIA_ROLE, "Screen", nullptr);
     stream_ = pw_stream_new(core_, "metashare-mutter", props);
 
     pw_stream_add_listener(stream_, &stream_listener_, &kStreamEvents, this);
@@ -196,27 +202,29 @@ bool MutterVirtualSource::start(std::string& err) {
     auto fmin = SPA_FRACTION(0, 1);
     auto fmax = SPA_FRACTION(240, 1);
     const struct spa_pod* params[1];
-    params[0] = reinterpret_cast<const struct spa_pod*>(spa_pod_builder_add_object(
-        &b, SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
-        SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_video),
-        SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
-        SPA_FORMAT_VIDEO_format,
-        SPA_POD_CHOICE_ENUM_Id(5, SPA_VIDEO_FORMAT_BGRA, SPA_VIDEO_FORMAT_BGRA,
-                               SPA_VIDEO_FORMAT_RGBA, SPA_VIDEO_FORMAT_BGRx,
-                               SPA_VIDEO_FORMAT_RGBx),
-        SPA_FORMAT_VIDEO_size,
-        SPA_POD_CHOICE_RANGE_Rectangle(&rect, &rmin, &rmax),
-        SPA_FORMAT_VIDEO_framerate,
-        SPA_POD_CHOICE_RANGE_Fraction(&frate, &fmin, &fmax)));
+    params[0] =
+        reinterpret_cast<const struct spa_pod*>(spa_pod_builder_add_object(
+            &b, SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
+            SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_video),
+            SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
+            SPA_FORMAT_VIDEO_format,
+            SPA_POD_CHOICE_ENUM_Id(5, SPA_VIDEO_FORMAT_BGRA,
+                                   SPA_VIDEO_FORMAT_BGRA, SPA_VIDEO_FORMAT_RGBA,
+                                   SPA_VIDEO_FORMAT_BGRx,
+                                   SPA_VIDEO_FORMAT_RGBx),
+            SPA_FORMAT_VIDEO_size,
+            SPA_POD_CHOICE_RANGE_Rectangle(&rect, &rmin, &rmax),
+            SPA_FORMAT_VIDEO_framerate,
+            SPA_POD_CHOICE_RANGE_Fraction(&frate, &fmin, &fmax)));
 
-    if (pw_stream_connect(stream_, PW_DIRECTION_INPUT, target_node,
-                          static_cast<pw_stream_flags>(
-                              PW_STREAM_FLAG_AUTOCONNECT |
-                              PW_STREAM_FLAG_MAP_BUFFERS),
-                          params, 1) < 0) {
+    if (pw_stream_connect(
+            stream_, PW_DIRECTION_INPUT, target_node,
+            static_cast<pw_stream_flags>(PW_STREAM_FLAG_AUTOCONNECT |
+                                         PW_STREAM_FLAG_MAP_BUFFERS),
+            params, 1) < 0) {
         pw_thread_loop_unlock(loop_);
-        err = "pw_stream_connect failed for node " +
-              std::to_string(target_node);
+        err =
+            "pw_stream_connect failed for node " + std::to_string(target_node);
         return false;
     }
     pw_thread_loop_unlock(loop_);
@@ -237,12 +245,24 @@ void MutterVirtualSource::stop() {
     running_ = false;
     cv_.notify_all();
     if (loop_) pw_thread_loop_lock(loop_);
-    if (stream_) { pw_stream_destroy(stream_); stream_ = nullptr; }
+    if (stream_) {
+        pw_stream_destroy(stream_);
+        stream_ = nullptr;
+    }
     if (loop_) pw_thread_loop_unlock(loop_);
-    if (core_) { pw_core_disconnect(core_); core_ = nullptr; }
+    if (core_) {
+        pw_core_disconnect(core_);
+        core_ = nullptr;
+    }
     if (loop_) { pw_thread_loop_stop(loop_); }
-    if (context_) { pw_context_destroy(context_); context_ = nullptr; }
-    if (loop_) { pw_thread_loop_destroy(loop_); loop_ = nullptr; }
+    if (context_) {
+        pw_context_destroy(context_);
+        context_ = nullptr;
+    }
+    if (loop_) {
+        pw_thread_loop_destroy(loop_);
+        loop_ = nullptr;
+    }
 
     std::lock_guard<std::mutex> lk(mu_);
     if (front_) av_frame_free(&front_);

@@ -1,0 +1,27 @@
+---
+Checks: >
+  -*,
+  bugprone-*,
+  performance-*,
+  portability-*,
+  clang-analyzer-*,
+  misc-*,
+  modernize-use-override,
+  modernize-use-nullptr,
+  modernize-use-using,
+  modernize-loop-convert,
+  modernize-make-unique,
+  modernize-make-shared,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -misc-const-correctness,
+  -misc-non-private-member-variables-in-classes,
+  -misc-include-cleaner,
+  -misc-use-anonymous-namespace,
+  -misc-unused-parameters,
+  -performance-enum-size,
+  -portability-avoid-pragma-once,
+  -clang-analyzer-optin.core.EnumCastOutOfRange
+WarningsAsErrors: '*'
+HeaderFilterRegex: '(src|client)/.*\.(hpp|h)$'
+FormatStyle: file

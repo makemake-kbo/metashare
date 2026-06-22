@@ -18,8 +18,8 @@ bool Decoder::open(int width, int height, bool hevc, ANativeWindow* surface,
     const char* mime = hevc ? "video/hevc" : "video/avc";
     codec_ = AMediaCodec_createDecoderByType(mime);
     if (!codec_) {
-        err = std::string("AMediaCodec_createDecoderByType(") + mime +
-              ") failed";
+        err =
+            std::string("AMediaCodec_createDecoderByType(") + mime + ") failed";
         return false;
     }
     AMediaFormat* fmt = AMediaFormat_new();
@@ -30,8 +30,7 @@ bool Decoder::open(int width, int height, bool hevc, ANativeWindow* surface,
     AMediaFormat_setInt32(fmt, "low-latency", 1);
 
     // Decode straight onto the SurfaceTexture-backed window.
-    media_status_t st =
-        AMediaCodec_configure(codec_, fmt, surface, nullptr, 0);
+    media_status_t st = AMediaCodec_configure(codec_, fmt, surface, nullptr, 0);
     AMediaFormat_delete(fmt);
     if (st != AMEDIA_OK) {
         err = "AMediaCodec_configure failed";

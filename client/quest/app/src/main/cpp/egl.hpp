@@ -29,7 +29,8 @@ bool egl_init(EglContext& e, std::string& err);
 void egl_destroy(EglContext& e);
 
 inline bool egl_make_current(const EglContext& e) {
-    return eglMakeCurrent(e.display, e.surface, e.surface, e.context) == EGL_TRUE;
+    return eglMakeCurrent(e.display, e.surface, e.surface, e.context) ==
+           EGL_TRUE;
 }
 
 }  // namespace metashare

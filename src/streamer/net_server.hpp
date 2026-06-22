@@ -18,7 +18,7 @@
 namespace metashare {
 
 class NetServer {
-public:
+  public:
     NetServer() = default;
     ~NetServer();
 
@@ -36,7 +36,7 @@ public:
 
     int client_count() const;
 
-private:
+  private:
     struct Client {
         int fd = -1;
         bool ready = false;  // has received a keyframe yet

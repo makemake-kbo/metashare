@@ -38,7 +38,8 @@
 #include "renderer.hpp"
 
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO, "MetaShare", __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "MetaShare", __VA_ARGS__)
+#define LOGE(...)                                                              \
+    __android_log_print(ANDROID_LOG_ERROR, "MetaShare", __VA_ARGS__)
 
 namespace metashare {
 
@@ -70,10 +71,10 @@ std::string xr_result_string(XrInstance instance, XrResult result) {
 }  // namespace
 
 class QuestClient {
-public:
+  public:
     void run(android_app* app);
 
-private:
+  private:
     bool init_openxr(android_app* app);
     bool create_session_and_actions();
     bool create_actions();
@@ -81,7 +82,7 @@ private:
     void destroy_passthrough();
     bool create_stream_assets();  // swapchain + renderer + decoder
     void destroy_stream_assets();
-    void poll_xr_events();        // updates session_running_/should_exit_
+    void poll_xr_events();  // updates session_running_/should_exit_
     void sync_and_handle_grab(XrTime time);
     bool trigger_held(XrPath hand);
     bool locate_hand(XrPath hand, XrTime time, XrPosef& out);
@@ -93,14 +94,16 @@ private:
     EglContext egl_;
     XrInstance instance_ = XR_NULL_HANDLE;
     XrSystemId system_ = XR_NULL_SYSTEM_ID;
-    PFN_xrGetOpenGLESGraphicsRequirementsKHR xrGetOpenGLESGraphicsRequirementsKHR_ = nullptr;
+    PFN_xrGetOpenGLESGraphicsRequirementsKHR
+        xrGetOpenGLESGraphicsRequirementsKHR_ = nullptr;
     XrSession session_ = XR_NULL_HANDLE;
     XrSpace space_ = XR_NULL_HANDLE;  // LOCAL stage the quad lives in
     bool session_running_ = false;
     bool should_exit_ = false;
 
-    // Optional Quest passthrough background. This keeps the OpenXR app immersive,
-    // but makes the quad feel like a monitor in the room instead of a black void.
+    // Optional Quest passthrough background. This keeps the OpenXR app
+    // immersive, but makes the quad feel like a monitor in the room instead of
+    // a black void.
     bool passthrough_enabled_ = false;
     bool passthrough_ready_ = false;
     XrPassthroughFB passthrough_ = XR_NULL_HANDLE;
@@ -150,15 +153,14 @@ bool QuestClient::init_openxr(android_app* app) {
     // On Android the loader must be initialized with the JVM/activity before
     // any other OpenXR call.
     PFN_xrInitializeLoaderKHR xrInitializeLoaderKHR = nullptr;
-    xrGetInstanceProcAddr(XR_NULL_HANDLE, "xrInitializeLoaderKHR",
-                          reinterpret_cast<PFN_xrVoidFunction*>(
-                              &xrInitializeLoaderKHR));
+    xrGetInstanceProcAddr(
+        XR_NULL_HANDLE, "xrInitializeLoaderKHR",
+        reinterpret_cast<PFN_xrVoidFunction*>(&xrInitializeLoaderKHR));
     if (!xrInitializeLoaderKHR) {
         LOGE("xrInitializeLoaderKHR not available");
         return false;
     }
-    XrLoaderInitInfoAndroidKHR loader{
-        XR_TYPE_LOADER_INIT_INFO_ANDROID_KHR};
+    XrLoaderInitInfoAndroidKHR loader{XR_TYPE_LOADER_INIT_INFO_ANDROID_KHR};
     loader.applicationVM = app->activity->vm;
     loader.applicationContext = app->activity->clazz;
     if (xrInitializeLoaderKHR(
@@ -222,10 +224,9 @@ bool QuestClient::init_openxr(android_app* app) {
         return false;
     }
 
-    xrGetInstanceProcAddr(
-        instance_, "xrGetOpenGLESGraphicsRequirementsKHR",
-        reinterpret_cast<PFN_xrVoidFunction*>(
-            &xrGetOpenGLESGraphicsRequirementsKHR_));
+    xrGetInstanceProcAddr(instance_, "xrGetOpenGLESGraphicsRequirementsKHR",
+                          reinterpret_cast<PFN_xrVoidFunction*>(
+                              &xrGetOpenGLESGraphicsRequirementsKHR_));
     if (xrGetOpenGLESGraphicsRequirementsKHR_) {
         XrGraphicsRequirementsOpenGLESKHR req{
             XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_ES_KHR};
@@ -244,8 +245,8 @@ bool QuestClient::init_openxr(android_app* app) {
 bool QuestClient::create_actions() {
     XrActionSetCreateInfo asi{XR_TYPE_ACTION_SET_CREATE_INFO};
     std::snprintf(asi.actionSetName, sizeof(asi.actionSetName), "main");
-    std::snprintf(asi.localizedActionSetName, sizeof(asi.localizedActionSetName),
-                  "Main");
+    std::snprintf(asi.localizedActionSetName,
+                  sizeof(asi.localizedActionSetName), "Main");
     if (xrCreateActionSet(instance_, &asi, &action_set_) != XR_SUCCESS) {
         LOGE("xrCreateActionSet failed");
         return false;
@@ -362,22 +363,27 @@ bool QuestClient::init_passthrough() {
 
     if (!load("xrCreatePassthroughFB",
               reinterpret_cast<PFN_xrVoidFunction*>(&xrCreatePassthroughFB_)) ||
-        !load("xrDestroyPassthroughFB",
-              reinterpret_cast<PFN_xrVoidFunction*>(&xrDestroyPassthroughFB_)) ||
+        !load("xrDestroyPassthroughFB", reinterpret_cast<PFN_xrVoidFunction*>(
+                                            &xrDestroyPassthroughFB_)) ||
         !load("xrPassthroughStartFB",
               reinterpret_cast<PFN_xrVoidFunction*>(&xrPassthroughStartFB_)) ||
         !load("xrPassthroughPauseFB",
               reinterpret_cast<PFN_xrVoidFunction*>(&xrPassthroughPauseFB_)) ||
         !load("xrCreatePassthroughLayerFB",
-              reinterpret_cast<PFN_xrVoidFunction*>(&xrCreatePassthroughLayerFB_)) ||
+              reinterpret_cast<PFN_xrVoidFunction*>(
+                  &xrCreatePassthroughLayerFB_)) ||
         !load("xrDestroyPassthroughLayerFB",
-              reinterpret_cast<PFN_xrVoidFunction*>(&xrDestroyPassthroughLayerFB_)) ||
+              reinterpret_cast<PFN_xrVoidFunction*>(
+                  &xrDestroyPassthroughLayerFB_)) ||
         !load("xrPassthroughLayerResumeFB",
-              reinterpret_cast<PFN_xrVoidFunction*>(&xrPassthroughLayerResumeFB_)) ||
+              reinterpret_cast<PFN_xrVoidFunction*>(
+                  &xrPassthroughLayerResumeFB_)) ||
         !load("xrPassthroughLayerPauseFB",
-              reinterpret_cast<PFN_xrVoidFunction*>(&xrPassthroughLayerPauseFB_)) ||
+              reinterpret_cast<PFN_xrVoidFunction*>(
+                  &xrPassthroughLayerPauseFB_)) ||
         !load("xrPassthroughLayerSetStyleFB",
-              reinterpret_cast<PFN_xrVoidFunction*>(&xrPassthroughLayerSetStyleFB_))) {
+              reinterpret_cast<PFN_xrVoidFunction*>(
+                  &xrPassthroughLayerSetStyleFB_))) {
         passthrough_enabled_ = false;
         return false;
     }
@@ -421,8 +427,10 @@ bool QuestClient::init_passthrough() {
 void QuestClient::destroy_passthrough() {
     passthrough_ready_ = false;
     if (passthrough_layer_ != XR_NULL_HANDLE) {
-        if (xrPassthroughLayerPauseFB_) xrPassthroughLayerPauseFB_(passthrough_layer_);
-        if (xrDestroyPassthroughLayerFB_) xrDestroyPassthroughLayerFB_(passthrough_layer_);
+        if (xrPassthroughLayerPauseFB_)
+            xrPassthroughLayerPauseFB_(passthrough_layer_);
+        if (xrDestroyPassthroughLayerFB_)
+            xrDestroyPassthroughLayerFB_(passthrough_layer_);
         passthrough_layer_ = XR_NULL_HANDLE;
     }
     if (passthrough_ != XR_NULL_HANDLE) {
@@ -473,11 +481,17 @@ bool QuestClient::create_stream_assets() {
 
     int64_t chosen = 0;
     for (uint32_t i = 0; i < fn; ++i) {
-        if (formats[i] == kGLRGBA8) { chosen = kGLRGBA8; break; }
+        if (formats[i] == kGLRGBA8) {
+            chosen = kGLRGBA8;
+            break;
+        }
     }
     if (!chosen)
         for (uint32_t i = 0; i < fn; ++i)
-            if (formats[i] == kGLSRGBA8) { chosen = kGLSRGBA8; break; }
+            if (formats[i] == kGLSRGBA8) {
+                chosen = kGLSRGBA8;
+                break;
+            }
     if (!chosen && fn) chosen = formats[0];
     if (!chosen) {
         LOGE("no swapchain formats reported");
@@ -503,13 +517,15 @@ bool QuestClient::create_stream_assets() {
 
     uint32_t ic = 0;
     xrEnumerateSwapchainImages(swapchain_, 0, &ic, nullptr);
-    images_.assign(ic, XrSwapchainImageOpenGLESKHR{XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR});
+    images_.assign(
+        ic, XrSwapchainImageOpenGLESKHR{XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR});
     xrEnumerateSwapchainImages(
         swapchain_, ic, &ic,
         reinterpret_cast<XrSwapchainImageBaseHeader*>(images_.data()));
 
     if (!decoder_.open(sw_w_, sw_h_,
-                       h.codec == static_cast<std::uint32_t>(proto::Codec::kH265),
+                       h.codec ==
+                           static_cast<std::uint32_t>(proto::Codec::kH265),
                        renderer_.decode_window(), err)) {
         LOGE("decoder open failed: %s", err.c_str());
         return false;
@@ -541,40 +557,35 @@ void QuestClient::poll_xr_events() {
     XrEventDataBuffer ed{XR_TYPE_EVENT_DATA_BUFFER};
     while (xrPollEvent(instance_, &ed) == XR_SUCCESS) {
         switch (ed.type) {
-            case XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED: {
-                auto* s = reinterpret_cast<XrEventDataSessionStateChanged*>(&ed);
-                LOG("session state -> %u", static_cast<unsigned>(s->state));
-                switch (s->state) {
-                    case XR_SESSION_STATE_READY:
-                        if (!session_running_) {
-                            XrSessionBeginInfo sbi{
-                                XR_TYPE_SESSION_BEGIN_INFO};
-                            sbi.primaryViewConfigurationType =
-                                XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-                            if (xrBeginSession(session_, &sbi) == XR_SUCCESS)
-                                session_running_ = true;
-                        }
-                        break;
-                    case XR_SESSION_STATE_STOPPING:
-                        if (session_running_) {
-                            xrEndSession(session_);
-                            session_running_ = false;
-                        }
-                        break;
-                    case XR_SESSION_STATE_EXITING:
-                    case XR_SESSION_STATE_LOSS_PENDING:
-                        should_exit_ = true;
-                        break;
-                    default:
-                        break;
+        case XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED: {
+            auto* s = reinterpret_cast<XrEventDataSessionStateChanged*>(&ed);
+            LOG("session state -> %u", static_cast<unsigned>(s->state));
+            switch (s->state) {
+            case XR_SESSION_STATE_READY:
+                if (!session_running_) {
+                    XrSessionBeginInfo sbi{XR_TYPE_SESSION_BEGIN_INFO};
+                    sbi.primaryViewConfigurationType =
+                        XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+                    if (xrBeginSession(session_, &sbi) == XR_SUCCESS)
+                        session_running_ = true;
                 }
                 break;
+            case XR_SESSION_STATE_STOPPING:
+                if (session_running_) {
+                    xrEndSession(session_);
+                    session_running_ = false;
+                }
+                break;
+            case XR_SESSION_STATE_EXITING:
+            case XR_SESSION_STATE_LOSS_PENDING: should_exit_ = true; break;
+            default: break;
             }
-            case XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING:
-                should_exit_ = true;
-                break;
-            default:
-                break;
+            break;
+        }
+        case XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING:
+            should_exit_ = true;
+            break;
+        default: break;
         }
         ed = XrEventDataBuffer{XR_TYPE_EVENT_DATA_BUFFER};
     }
@@ -593,7 +604,8 @@ bool QuestClient::locate_hand(XrPath hand, XrTime time, XrPosef& out) {
     XrSpaceLocation loc{XR_TYPE_SPACE_LOCATION};
     XrSpace sp = (hand == left_hand_) ? left_space_ : right_space_;
     if (xrLocateSpace(sp, space_, time, &loc) != XR_SUCCESS) return false;
-    if (!(loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)) return false;
+    if (!(loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT))
+        return false;
     out = loc.pose;
     return true;
 }
@@ -612,27 +624,27 @@ void QuestClient::sync_and_handle_grab(XrTime time) {
     const bool rok = locate_hand(right_hand_, time, rpose);
 
     switch (grabber_) {
-        case kNone:
-            if (lp && lok) {
-                grabber_ = kLeft;
-                grab_offset_ = sub(window_pose_.position, lpose.position);
-            } else if (rp && rok) {
-                grabber_ = kRight;
-                grab_offset_ = sub(window_pose_.position, rpose.position);
-            }
-            break;
-        case kLeft:
-            if (lp && lok)
-                window_pose_.position = add(lpose.position, grab_offset_);
-            else
-                grabber_ = kNone;
-            break;
-        case kRight:
-            if (rp && rok)
-                window_pose_.position = add(rpose.position, grab_offset_);
-            else
-                grabber_ = kNone;
-            break;
+    case kNone:
+        if (lp && lok) {
+            grabber_ = kLeft;
+            grab_offset_ = sub(window_pose_.position, lpose.position);
+        } else if (rp && rok) {
+            grabber_ = kRight;
+            grab_offset_ = sub(window_pose_.position, rpose.position);
+        }
+        break;
+    case kLeft:
+        if (lp && lok)
+            window_pose_.position = add(lpose.position, grab_offset_);
+        else
+            grabber_ = kNone;
+        break;
+    case kRight:
+        if (rp && rok)
+            window_pose_.position = add(rpose.position, grab_offset_);
+        else
+            grabber_ = kNone;
+        break;
     }
 }
 
@@ -649,7 +661,8 @@ void QuestClient::render_frame() {
 
     const XrTime t = fs.predictedDisplayTime;
 
-    // Pump the decoder and consume the latest decoded frame into the GL texture.
+    // Pump the decoder and consume the latest decoded frame into the GL
+    // texture.
     if (assets_ready_) {
         EncodedFrame f;
         while (net_.pop_frame(f, 0))
@@ -671,8 +684,8 @@ void QuestClient::render_frame() {
     if (passthrough_ready_) {
         passthrough_layer.space = space_;
         passthrough_layer.layerHandle = passthrough_layer_;
-        layers.push_back(
-            reinterpret_cast<XrCompositionLayerBaseHeader*>(&passthrough_layer));
+        layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(
+            &passthrough_layer));
     }
 
     XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
@@ -695,7 +708,8 @@ void QuestClient::render_frame() {
                      kDefaultWindowWidth * sw_h_ / float(sw_w_)};
         quad.subImage.swapchain = swapchain_;
         quad.subImage.imageRect = {{0, 0}, {sw_w_, sw_h_}};
-        layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&quad));
+        layers.push_back(
+            reinterpret_cast<XrCompositionLayerBaseHeader*>(&quad));
     }
 
     if (!layers.empty()) {
@@ -741,7 +755,8 @@ void QuestClient::run(android_app* app) {
                         LOGE("connect failed: %s", e.c_str());
                     }
                 }
-                if (!net_.connected()) std::this_thread::sleep_for(std::chrono::seconds(2));
+                if (!net_.connected())
+                    std::this_thread::sleep_for(std::chrono::seconds(2));
             } else {
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
             }
@@ -767,7 +782,8 @@ void QuestClient::run(android_app* app) {
                     if (!create_stream_assets()) {
                         destroy_stream_assets();
                         asset_creation_failed_ = true;
-                        LOGE("stream asset creation failed; reconnect or relaunch to retry");
+                        LOGE("stream asset creation failed; reconnect or "
+                             "relaunch to retry");
                     }
                 }
             } else if (!net_.connected() && assets_ready_) {
@@ -784,8 +800,9 @@ void QuestClient::run(android_app* app) {
 
     stopping_ = true;
     destroy_stream_assets();
-    if (connector_.joinable()) connector_.join();  // connector stops net_ on exit
-    net_.stop();  // safe no-op if the connector already did
+    if (connector_.joinable())
+        connector_.join();  // connector stops net_ on exit
+    net_.stop();            // safe no-op if the connector already did
 
     destroy_passthrough();
     if (left_space_) xrDestroySpace(left_space_);

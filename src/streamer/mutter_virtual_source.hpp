@@ -29,7 +29,7 @@ struct spa_pod;
 namespace metashare {
 
 class MutterVirtualSource final : public FrameSource {
-public:
+  public:
     // session must outlive this source. monitor_idx is the index returned by
     // MutterScreenCastSession::add_virtual_monitor().
     MutterVirtualSource(MutterScreenCastSession& session, int monitor_idx,
@@ -50,7 +50,7 @@ public:
     void on_param_changed(const struct spa_pod* param);
     void on_process();
 
-private:
+  private:
     MutterScreenCastSession& session_;
     int monitor_idx_;
     int fps_hint_;

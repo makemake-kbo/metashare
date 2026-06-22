@@ -73,9 +73,8 @@ using VarMap = std::map<std::string, sdbus::Variant>;
 // seeded with handle_token and must call the portal method). Returns false on
 // failure or non-zero portal response code.
 bool portal_request(sdbus::IConnection& conn, const std::string& unique_name,
-                    VarMap options,
-                    const std::function<void(VarMap&)>& invoke, VarMap& results,
-                    std::string& err, int timeout_s = 120) {
+                    VarMap options, const std::function<void(VarMap&)>& invoke,
+                    VarMap& results, std::string& err, int timeout_s = 120) {
     const std::string token = random_token("ms");
     const std::string rpath = request_path(unique_name, token);
     options["handle_token"] = sdbus::Variant(token);
@@ -138,12 +137,11 @@ bool PortalPipeWireSource::run_portal(int& pw_fd, std::uint32_t& node_id,
             bus_socket_present = (::stat(sock.c_str(), &st) == 0);
         }
         if (!bus_socket_present) {
-            err =
-                "no D-Bus session bus available. The portal source needs "
-                "xdg-desktop-portal over D-Bus. Either run from a graphical "
-                "session (GNOME/KDE/Sway/etc.), or prefix your command with "
-                "'dbus-run-session' (and make sure xdg-desktop-portal is "
-                "actually running in that bus).";
+            err = "no D-Bus session bus available. The portal source needs "
+                  "xdg-desktop-portal over D-Bus. Either run from a graphical "
+                  "session (GNOME/KDE/Sway/etc.), or prefix your command with "
+                  "'dbus-run-session' (and make sure xdg-desktop-portal is "
+                  "actually running in that bus).";
             return false;
         }
     }
@@ -160,8 +158,8 @@ bool PortalPipeWireSource::run_portal(int& pw_fd, std::uint32_t& node_id,
     sdbus::IConnection& conn = *portal_->conn;
     const std::string unique = conn.getUniqueName();
 
-    auto portal =
-        sdbus::createProxy(conn, std::string{kPortalService}, std::string{kPortalPath});
+    auto portal = sdbus::createProxy(conn, std::string{kPortalService},
+                                     std::string{kPortalPath});
 
     // 1) CreateSession
     {
@@ -269,15 +267,16 @@ namespace {
 
 AVPixelFormat spa_to_av(std::uint32_t spa_fmt) {
     switch (spa_fmt) {
-        case SPA_VIDEO_FORMAT_BGRA: return AV_PIX_FMT_BGRA;
-        case SPA_VIDEO_FORMAT_RGBA: return AV_PIX_FMT_RGBA;
-        case SPA_VIDEO_FORMAT_BGRx: return AV_PIX_FMT_BGR0;
-        case SPA_VIDEO_FORMAT_RGBx: return AV_PIX_FMT_RGB0;
-        default: return AV_PIX_FMT_NONE;
+    case SPA_VIDEO_FORMAT_BGRA: return AV_PIX_FMT_BGRA;
+    case SPA_VIDEO_FORMAT_RGBA: return AV_PIX_FMT_RGBA;
+    case SPA_VIDEO_FORMAT_BGRx: return AV_PIX_FMT_BGR0;
+    case SPA_VIDEO_FORMAT_RGBx: return AV_PIX_FMT_RGB0;
+    default: return AV_PIX_FMT_NONE;
     }
 }
 
-void cb_param_changed(void* data, std::uint32_t id, const struct spa_pod* param) {
+void cb_param_changed(void* data, std::uint32_t id,
+                      const struct spa_pod* param) {
     if (id != SPA_PARAM_Format || param == nullptr) return;
     static_cast<PortalPipeWireSource*>(data)->on_param_changed(param);
 }
@@ -291,12 +290,12 @@ void cb_state_changed(void* data, enum pw_stream_state old,
                  error ? error : "");
 }
 
-    static struct pw_stream_events kStreamEvents = {
-        .version = PW_VERSION_STREAM_EVENTS,
-        .state_changed = cb_state_changed,
-        .param_changed = cb_param_changed,
-        .process = cb_process,
-    };
+static struct pw_stream_events kStreamEvents = {
+    .version = PW_VERSION_STREAM_EVENTS,
+    .state_changed = cb_state_changed,
+    .param_changed = cb_param_changed,
+    .process = cb_process,
+};
 
 }  // namespace
 
@@ -374,12 +373,13 @@ void PortalPipeWireSource::on_process() {
             const auto& d = sbuf->datas[0];
             const int src_stride =
                 d.chunk->stride ? d.chunk->stride : back_->linesize[0];
-            const auto* src = static_cast<const std::uint8_t*>(d.data) +
-                              d.chunk->offset;
-            av_image_copy_plane(back_->data[0], back_->linesize[0], src,
-                                src_stride, std::min(src_stride, back_->linesize[0]),
-                                back_->height);
-            const auto now = std::chrono::steady_clock::now().time_since_epoch();
+            const auto* src =
+                static_cast<const std::uint8_t*>(d.data) + d.chunk->offset;
+            av_image_copy_plane(
+                back_->data[0], back_->linesize[0], src, src_stride,
+                std::min(src_stride, back_->linesize[0]), back_->height);
+            const auto now =
+                std::chrono::steady_clock::now().time_since_epoch();
             pts_usec_ =
                 std::chrono::duration_cast<std::chrono::microseconds>(now)
                     .count();
@@ -417,9 +417,15 @@ bool PortalPipeWireSource::start(std::string& err) {
 
     pw_init(nullptr, nullptr);
     loop_ = pw_thread_loop_new("metashare-capture", nullptr);
-    if (!loop_) { err = "pw_thread_loop_new failed"; return false; }
+    if (!loop_) {
+        err = "pw_thread_loop_new failed";
+        return false;
+    }
     context_ = pw_context_new(pw_thread_loop_get_loop(loop_), nullptr, 0);
-    if (!context_) { err = "pw_context_new failed"; return false; }
+    if (!context_) {
+        err = "pw_context_new failed";
+        return false;
+    }
 
     pw_thread_loop_lock(loop_);
     if (pw_thread_loop_start(loop_) < 0) {
@@ -434,9 +440,9 @@ bool PortalPipeWireSource::start(std::string& err) {
         return false;
     }
 
-    struct pw_properties* props = pw_properties_new(
-        PW_KEY_MEDIA_TYPE, "Video", PW_KEY_MEDIA_CATEGORY, "Capture",
-        PW_KEY_MEDIA_ROLE, "Screen", nullptr);
+    struct pw_properties* props =
+        pw_properties_new(PW_KEY_MEDIA_TYPE, "Video", PW_KEY_MEDIA_CATEGORY,
+                          "Capture", PW_KEY_MEDIA_ROLE, "Screen", nullptr);
     stream_ = pw_stream_new(core_, "metashare-capture", props);
 
     pw_stream_add_listener(stream_, &stream_listener_, &kStreamEvents, this);
@@ -451,10 +457,9 @@ bool PortalPipeWireSource::start(std::string& err) {
     auto fmax = SPA_FRACTION(240, 1);
     const struct spa_pod* params[1];
     params[0] = reinterpret_cast<const spa_pod*>(spa_pod_builder_add_object(
-        &b, SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
-        SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_video),
-        SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
-        SPA_FORMAT_VIDEO_format,
+        &b, SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat, SPA_FORMAT_mediaType,
+        SPA_POD_Id(SPA_MEDIA_TYPE_video), SPA_FORMAT_mediaSubtype,
+        SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw), SPA_FORMAT_VIDEO_format,
         SPA_POD_CHOICE_ENUM_Id(5, SPA_VIDEO_FORMAT_BGRA, SPA_VIDEO_FORMAT_BGRA,
                                SPA_VIDEO_FORMAT_RGBA, SPA_VIDEO_FORMAT_BGRx,
                                SPA_VIDEO_FORMAT_RGBx),
@@ -463,11 +468,11 @@ bool PortalPipeWireSource::start(std::string& err) {
         SPA_FORMAT_VIDEO_framerate,
         SPA_POD_CHOICE_RANGE_Fraction(&frate, &fmin, &fmax)));
 
-    if (pw_stream_connect(stream_, PW_DIRECTION_INPUT, node_id,
-                          static_cast<pw_stream_flags>(
-                              PW_STREAM_FLAG_AUTOCONNECT |
-                              PW_STREAM_FLAG_MAP_BUFFERS),
-                          params, 1) < 0) {
+    if (pw_stream_connect(
+            stream_, PW_DIRECTION_INPUT, node_id,
+            static_cast<pw_stream_flags>(PW_STREAM_FLAG_AUTOCONNECT |
+                                         PW_STREAM_FLAG_MAP_BUFFERS),
+            params, 1) < 0) {
         pw_thread_loop_unlock(loop_);
         err = "pw_stream_connect failed";
         return false;
@@ -488,12 +493,24 @@ bool PortalPipeWireSource::start(std::string& err) {
 void PortalPipeWireSource::stop() {
     running_ = false;
     if (loop_) pw_thread_loop_lock(loop_);
-    if (stream_) { pw_stream_destroy(stream_); stream_ = nullptr; }
+    if (stream_) {
+        pw_stream_destroy(stream_);
+        stream_ = nullptr;
+    }
     if (loop_) pw_thread_loop_unlock(loop_);
-    if (core_) { pw_core_disconnect(core_); core_ = nullptr; }
+    if (core_) {
+        pw_core_disconnect(core_);
+        core_ = nullptr;
+    }
     if (loop_) { pw_thread_loop_stop(loop_); }
-    if (context_) { pw_context_destroy(context_); context_ = nullptr; }
-    if (loop_) { pw_thread_loop_destroy(loop_); loop_ = nullptr; }
+    if (context_) {
+        pw_context_destroy(context_);
+        context_ = nullptr;
+    }
+    if (loop_) {
+        pw_thread_loop_destroy(loop_);
+        loop_ = nullptr;
+    }
 
     std::lock_guard<std::mutex> lk(mu_);
     if (front_) av_frame_free(&front_);

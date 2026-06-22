@@ -2,10 +2,12 @@
 //
 // Owns the consumer side of the GPU decode path:
 //   * an `ASurfaceTexture` (native NDK, API 28+) whose ANativeWindow is handed
-//     to MediaCodec as the decode target — so decoded frames never touch the CPU;
+//     to MediaCodec as the decode target — so decoded frames never touch the
+//     CPU;
 //   * a GL_TEXTURE_EXTERNAL_OES texture that the SurfaceTexture updates;
 //   * a tiny ESSL3 program that samples that external texture (applying the
-//     SurfaceTexture transform matrix) into an OpenXR quad-layer swapchain image.
+//     SurfaceTexture transform matrix) into an OpenXR quad-layer swapchain
+//     image.
 //
 // All methods must be called on the render thread that has the EGL context
 // current (ASurfaceTexture_updateTexImage and GL calls require it).
@@ -24,14 +26,15 @@
 namespace metashare {
 
 class Renderer {
-public:
+  public:
     Renderer() = default;
     ~Renderer();
 
     // Creates the OES texture, the Android SurfaceTexture (constructed via JNI
     // against this thread's current GL context, then wrapped as an
-    // ASurfaceTexture), the blit program and an FBO. On success, decode_window()
-    // is the surface to pass to the Decoder. `vm` is the app's JavaVM.
+    // ASurfaceTexture), the blit program and an FBO. On success,
+    // decode_window() is the surface to pass to the Decoder. `vm` is the app's
+    // JavaVM.
     bool init(std::string& err, JavaVM* vm);
     void destroy();
 
@@ -48,12 +51,12 @@ public:
     // first frame arrives so the quad never shows uninitialized memory.
     void render_to_image(GLuint target_tex, int w, int h);
 
-private:
+  private:
     ASurfaceTexture* st_ = nullptr;
     ANativeWindow* decode_window_ = nullptr;
     JavaVM* vm_ = nullptr;
     JNIEnv* env_ = nullptr;
-    jobject jst_ = nullptr;          // global ref to the Java SurfaceTexture
+    jobject jst_ = nullptr;  // global ref to the Java SurfaceTexture
     bool jni_attached_ = false;
     GLuint oes_tex_ = 0;
     GLuint program_ = 0;

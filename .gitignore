@@ -1,4 +1,5 @@
 /build/
+/build-lint/
 /result
 .direnv/
 

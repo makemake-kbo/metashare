@@ -150,6 +150,7 @@
             echo "Streamer: ./build/src/streamer/metashare-streamer"
             echo "Test client: ./build/client/desktop_test/metashare-testclient"
             echo "GTK4 control panel: ./build/client/gtk/metashare-streamer-ui"
+            echo "Lint: scripts/lint.sh  (--fix to reformat)"
           '';
         };
 

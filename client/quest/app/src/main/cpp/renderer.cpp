@@ -5,7 +5,8 @@
 #include <cstring>
 
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO, "MetaShare", __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "MetaShare", __VA_ARGS__)
+#define LOGE(...)                                                              \
+    __android_log_print(ANDROID_LOG_ERROR, "MetaShare", __VA_ARGS__)
 
 namespace metashare {
 
@@ -16,7 +17,8 @@ namespace {
 // correct sample coords, handling any Y-flip/crop the decoder requires.
 //   x      y     u    v
 constexpr float kVerts[] = {
-    -1.f, -1.f, 0.f, 0.f, 1.f, -1.f, 1.f, 0.f, -1.f, 1.f, 0.f, 1.f, 1.f, 1.f, 1.f, 1.f,
+    -1.f, -1.f, 0.f, 0.f, 1.f, -1.f, 1.f, 0.f,
+    -1.f, 1.f,  0.f, 1.f, 1.f, 1.f,  1.f, 1.f,
 };
 
 const char* kVS = R"(#version 300 es
@@ -90,8 +92,10 @@ bool Renderer::init(std::string& err, JavaVM* vm) {
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, oes_tex_);
     glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S,
+                    GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T,
+                    GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
 
     // NDK r26 has no ASurfaceTexture_create(): a SurfaceTexture must be created
@@ -99,7 +103,8 @@ bool Renderer::init(std::string& err, JavaVM* vm) {
     // constructor binds it straight to our OES texture name, so no
     // attach/detach round-trip is needed.
     JNIEnv* env = nullptr;
-    if (vm_->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_EDETACHED) {
+    if (vm_->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) ==
+        JNI_EDETACHED) {
         JavaVMAttachArgs args{JNI_VERSION_1_6, "MetaShare", nullptr};
         if (vm_->AttachCurrentThread(&env, &args) != JNI_OK) {
             err = "JNI AttachCurrentThread failed";

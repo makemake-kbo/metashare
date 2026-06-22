@@ -11,7 +11,7 @@
 namespace metashare {
 
 class TestPatternSource final : public FrameSource {
-public:
+  public:
     explicit TestPatternSource(SourceFormat fmt, int monitor_index = 0);
     ~TestPatternSource() override;
 
@@ -20,7 +20,7 @@ public:
     SourceFormat format() const override { return fmt_; }
     int next_frame(AVFrame** out, std::int64_t& pts_usec) override;
 
-private:
+  private:
     SourceFormat fmt_;
     int monitor_index_;
     AVFrame* frame_ = nullptr;

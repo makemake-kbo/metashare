@@ -21,7 +21,7 @@ struct ANativeWindow;
 namespace metashare {
 
 class Decoder {
-public:
+  public:
     Decoder() = default;
     ~Decoder();
 
@@ -32,8 +32,8 @@ public:
     void close();
 
     // Queue one encoded access unit (Annex-B). pts in microseconds.
-    bool feed(const std::uint8_t* data, std::size_t size, std::uint64_t pts_usec,
-              bool keyframe);
+    bool feed(const std::uint8_t* data, std::size_t size,
+              std::uint64_t pts_usec, bool keyframe);
 
     // Release any decoded output buffers to the surface; returns true if a new
     // frame was rendered (the SurfaceTexture now has fresh content).
@@ -41,7 +41,7 @@ public:
 
     bool is_hevc() const { return hevc_; }
 
-private:
+  private:
     AMediaCodec* codec_ = nullptr;
     bool started_ = false;
     bool hevc_ = false;

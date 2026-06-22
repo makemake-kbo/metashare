@@ -69,7 +69,8 @@ bool NetStream::discover(int timeout_ms) {
     if (::getifaddrs(&ifa) == 0) {
         for (ifaddrs* p = ifa; p; p = p->ifa_next) {
             if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET) continue;
-            if (!(p->ifa_flags & IFF_BROADCAST) || (p->ifa_flags & IFF_LOOPBACK))
+            if (!(p->ifa_flags & IFF_BROADCAST) ||
+                (p->ifa_flags & IFF_LOOPBACK))
                 continue;
             if (p->ifa_broadaddr)
                 send_to(reinterpret_cast<sockaddr_in*>(p->ifa_broadaddr)
@@ -123,8 +124,8 @@ bool NetStream::connect_and_run(std::string& err) {
     ::setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
 
     if (!read_all(fd_, &header_, sizeof(header_)) ||
-        std::memcmp(header_.magic, proto::kStreamMagic, sizeof(header_.magic)) !=
-            0) {
+        std::memcmp(header_.magic, proto::kStreamMagic,
+                    sizeof(header_.magic)) != 0) {
         err = "bad stream header";
         ::close(fd_);
         fd_ = -1;

@@ -50,13 +50,14 @@ bool read_all(int fd, void* buf, std::size_t len) {
     return true;
 }
 
-// Broadcast a discovery probe and wait for an offer. Fills host/port on success.
+// Broadcast a discovery probe and wait for an offer. Fills host/port on
+// success.
 bool discover(std::string& host, std::uint16_t& port, int timeout_ms) {
     int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) return false;
     int yes = 1;
     ::setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
-    timeval tv{timeout_ms / 1000, (timeout_ms % 1000) * 1000};
+    timeval tv{timeout_ms / 1000, (timeout_ms % 1000) * 1000L};
     ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     proto::DiscoveryProbe probe{};
@@ -82,7 +83,8 @@ bool discover(std::string& host, std::uint16_t& port, int timeout_ms) {
     if (::getifaddrs(&ifa) == 0) {
         for (ifaddrs* p = ifa; p; p = p->ifa_next) {
             if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET) continue;
-            if (!(p->ifa_flags & IFF_BROADCAST) || (p->ifa_flags & IFF_LOOPBACK))
+            if (!(p->ifa_flags & IFF_BROADCAST) ||
+                (p->ifa_flags & IFF_LOOPBACK))
                 continue;
             if (p->ifa_broadaddr)
                 send_to(reinterpret_cast<sockaddr_in*>(p->ifa_broadaddr)
@@ -141,11 +143,13 @@ int main(int argc, char** argv) {
     std::uint16_t port = proto::kStreamPort;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
-        if (a == "--host" && i + 1 < argc) host = argv[++i];
+        if (a == "--host" && i + 1 < argc)
+            host = argv[++i];
         else if (a == "--port" && i + 1 < argc)
             port = static_cast<std::uint16_t>(std::atoi(argv[++i]));
         else if (a == "-h" || a == "--help") {
-            std::fprintf(stderr,
+            std::fprintf(
+                stderr,
                 "Usage: %s [--host <ip>] [--port <n>]\n"
                 "  With no --host, discovers the streamer via UDP broadcast.\n",
                 argv[0]);
@@ -155,7 +159,8 @@ int main(int argc, char** argv) {
 
     if (host.empty()) {
         if (!discover(host, port, 3000)) {
-            std::fprintf(stderr,
+            std::fprintf(
+                stderr,
                 "[client] discovery failed; pass --host <ip> explicitly\n");
             return 1;
         }
@@ -175,10 +180,11 @@ int main(int argc, char** argv) {
         ::close(fd);
         return 1;
     }
-    std::fprintf(stderr, "[client] stream %ux%u codec=%u\n", sh.width, sh.height,
-                 sh.codec);
+    std::fprintf(stderr, "[client] stream %ux%u codec=%u\n", sh.width,
+                 sh.height, sh.codec);
 
-    const bool hevc = sh.codec == static_cast<std::uint32_t>(proto::Codec::kH265);
+    const bool hevc =
+        sh.codec == static_cast<std::uint32_t>(proto::Codec::kH265);
     AVCodecID dec_id = hevc ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264;
     const AVCodec* dec = avcodec_find_decoder(dec_id);
     AVCodecContext* dctx = avcodec_alloc_context3(dec);
@@ -195,12 +201,12 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "[client] SDL_Init: %s\n", SDL_GetError());
         return 1;
     }
-    SDL_Window* win = SDL_CreateWindow(
-        "MetaShare", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        static_cast<int>(sh.width), static_cast<int>(sh.height),
-        SDL_WINDOW_RESIZABLE);
-    SDL_Renderer* ren =
-        SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    SDL_Window* win =
+        SDL_CreateWindow("MetaShare", SDL_WINDOWPOS_CENTERED,
+                         SDL_WINDOWPOS_CENTERED, static_cast<int>(sh.width),
+                         static_cast<int>(sh.height), SDL_WINDOW_RESIZABLE);
+    SDL_Renderer* ren = SDL_CreateRenderer(
+        win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     SDL_Texture* tex = SDL_CreateTexture(
         ren, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STREAMING,
         static_cast<int>(sh.width), static_cast<int>(sh.height));

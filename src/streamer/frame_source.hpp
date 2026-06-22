@@ -27,7 +27,7 @@ struct SourceFormat {
 };
 
 class FrameSource {
-public:
+  public:
     virtual ~FrameSource() = default;
 
     // Negotiate/begin capture. Returns false on fatal error; err is filled in.

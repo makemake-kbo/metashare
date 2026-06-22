@@ -14,6 +14,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # --- Lint: clang-format style + clang-tidy static analysis ----------------
+  lint:
+    name: Lint (clang-format + clang-tidy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Run clang-format + clang-tidy
+        run: nix develop --command scripts/lint.sh
+
   # --- Check: compile the Wayland streamer/UI via the Nix flake -------------
   check:
     name: Build streamer (Linux)
@@ -153,7 +166,7 @@ jobs:
   release:
     name: Publish release
     if: github.ref_type == 'tag'
-    needs: [check, apk, flatpak-cli, flatpak-ui]
+    needs: [lint, check, apk, flatpak-cli, flatpak-ui]
     runs-on: ubuntu-latest
     permissions:
       contents: write

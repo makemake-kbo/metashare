@@ -12,7 +12,7 @@
 namespace metashare {
 
 class DiscoveryResponder {
-public:
+  public:
     DiscoveryResponder() = default;
     ~DiscoveryResponder();
 
@@ -23,7 +23,7 @@ public:
                std::string& err);
     void stop();
 
-private:
+  private:
     void serve_loop();
 
     int fd_ = -1;

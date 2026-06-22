@@ -50,11 +50,11 @@ struct PortalOptions {
     int fps_hint = 60;
     std::uint32_t source_types = 1;  // MONITOR by default
     bool multiple = false;
-    std::uint32_t cursor_mode = 2;   // METADATA (cursor as PipeWire metadata)
+    std::uint32_t cursor_mode = 2;  // METADATA (cursor as PipeWire metadata)
 };
 
 class PortalPipeWireSource final : public FrameSource {
-public:
+  public:
     explicit PortalPipeWireSource(int fps_hint);
     explicit PortalPipeWireSource(const PortalOptions& opts);
     ~PortalPipeWireSource() override;
@@ -68,7 +68,7 @@ public:
     void on_param_changed(const struct spa_pod* param);
     void on_process();
 
-private:
+  private:
     // Drives the xdg-desktop-portal ScreenCast dialog; returns a PipeWire fd
     // (owned by caller) and the node id to attach to.
     bool run_portal(int& pw_fd, std::uint32_t& node_id, std::string& err);

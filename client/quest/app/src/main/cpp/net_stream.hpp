@@ -25,7 +25,7 @@ struct EncodedFrame {
 };
 
 class NetStream {
-public:
+  public:
     NetStream() = default;
     ~NetStream();
 
@@ -47,7 +47,7 @@ public:
     const proto::StreamHeader& header() const { return header_; }
     bool connected() const { return running_; }
 
-private:
+  private:
     void recv_loop();
 
     std::string host_;
