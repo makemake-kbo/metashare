@@ -8,7 +8,7 @@
 # Build it via the flake:  nix run .#flatpak-ui
 app-id: dev.metashare.StreamerUI
 runtime: org.gnome.Platform
-runtime-version: '47'
+runtime-version: '50'
 sdk: org.gnome.Sdk
 command: metashare-streamer-ui
 
@@ -72,7 +72,7 @@ modules:
     sources:
       - type: git
         url: https://gitlab.gnome.org/GNOME/glibmm.git
-        tag: '2.82.0'
+        tag: '2.88.0'
 
   - name: cairomm
     buildsystem: meson
@@ -88,12 +88,15 @@ modules:
   - name: pangomm
     buildsystem: meson
     # pangomm has no build-examples option, only build-documentation.
+    # Tracks the runtime's pango: 2.56 needs pango >= 1.56, which the GNOME 50
+    # runtime provides. (On older runtimes this falls back to cloning pango as
+    # a meson subproject and fails in the network-less build sandbox.)
     config-opts:
       - -Dbuild-documentation=false
     sources:
       - type: git
         url: https://gitlab.gnome.org/GNOME/pangomm.git
-        tag: '2.56.0'
+        tag: '2.56.1'
 
   - name: gtkmm
     buildsystem: meson
@@ -104,7 +107,7 @@ modules:
     sources:
       - type: git
         url: https://gitlab.gnome.org/GNOME/gtkmm.git
-        tag: '4.16.0'
+        tag: '4.20.0'
 
   # --- the app itself -------------------------------------------------------
   - name: metashare
