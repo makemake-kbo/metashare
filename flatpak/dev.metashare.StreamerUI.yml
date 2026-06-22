@@ -87,8 +87,8 @@ modules:
 
   - name: pangomm
     buildsystem: meson
+    # pangomm has no build-examples option, only build-documentation.
     config-opts:
-      - -Dbuild-examples=false
       - -Dbuild-documentation=false
     sources:
       - type: git
