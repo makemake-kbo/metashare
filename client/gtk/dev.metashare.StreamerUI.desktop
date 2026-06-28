@@ -3,6 +3,7 @@ Type=Application
 Name=MetaShare Streamer
 Comment=Configure and launch the MetaShare Wayland streamer
 Exec=metashare-streamer-ui
+Icon=dev.metashare.StreamerUI
 Terminal=false
 Categories=AudioVideo;Network;
 Keywords=streaming;screencast;vr;quest;wayland;

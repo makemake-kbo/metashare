@@ -1,10 +1,10 @@
 // Main window for the MetaShare streamer control panel.
 //
-// The window presents a GNOME-style list of settings (source, resolution with a
-// locked aspect ratio, fps, bitrate, codec, hardware accel, port, discovery)
-// and a Start/Stop button. "Start" spawns `metashare-streamer` with the chosen
-// CLI args; the streamer's stdout/stderr are tee'd into a log view. There is no
-// video decoding here — the Quest (or SDL2 test client) is the consumer.
+// The window presents a GNOME-style list of encoder settings (codec, bitrate,
+// frame rate) and a primary Start/Stop button. "Start" spawns
+// `metashare-streamer` with the chosen CLI args; the streamer's stdout/stderr
+// are tee'd into a log view. There is no video decoding here — the Quest (or
+// SDL2 test client) is the consumer.
 
 #include "main_window.hpp"
 
@@ -22,25 +22,55 @@
 
 namespace {
 
-constexpr int kMinDim = 16;
-constexpr int kMaxDim = 7680;  // 8K cap
 constexpr int kMinFps = 1;
 constexpr int kMaxFps = 240;
 constexpr int kMinBitrate = 200;     // kbps
 constexpr int kMaxBitrate = 200000;  // 200 Mbps
-constexpr int kMinPort = 1024;
-constexpr int kMaxPort = 65535;
 
 // Mark the binary we look for in $PATH when no override is given.
 constexpr const char* kStreamerBinary = "metashare-streamer";
 
-}  // namespace
+// The GUI always streams this many virtual displays via the portal's VIRTUAL
+// source type (each is a standalone virtual monitor the user can place windows
+// on and the Quest client can position in 3-D space).
+constexpr int kVirtualDisplays = 3;
 
-// Aspect presets offered by the dropdown. 16:9 first (default selection).
-const MainWindow::AspectPreset MainWindow::kPresets[] = {
-    {"16:9", 16, 9}, {"16:10", 16, 10}, {"4:3", 4, 3}, {"21:9", 21, 9},
-    {"32:9", 32, 9}, {"1:1", 1, 1},     {"3:2", 3, 2},
-};
+// A tiny CSS chunk giving the status dot its colour and the primary button a
+// little extra presence. Everything else inherits from the active GTK theme
+// (Adwaita on GNOME), so the result tracks the platform look.
+const char* const kUiCss = R"css(
+  .status-dot {
+    border-radius: 9999px;
+    min-width: 10px;
+    min-height: 10px;
+  }
+  .status-idle    { background-color: alpha(@theme_fg_color, 0.35); }
+  .status-running { background-color: @success_color; }
+  .status-busy    { background-color: @warning_color; }
+  .status-error   { background-color: @error_color; }
+
+  /* Subtle grouping for the primary action so it reads as the main CTA. */
+  .primary-action {
+    padding: 10px 16px;
+    border-radius: 12px;
+    font-weight: 700;
+  }
+
+  .section-label {
+    color: alpha(@theme_fg_color, 0.55);
+    font-weight: 700;
+  }
+)css";
+
+void inject_css_provider() {
+    auto provider = Gtk::CssProvider::create();
+    provider->load_from_data(kUiCss);
+    Gtk::StyleProvider::add_provider_for_display(
+        Gdk::Display::get_default(), provider,
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+}
+
+}  // namespace
 
 MainWindow::MainWindow() { build_ui(); }
 
@@ -64,8 +94,8 @@ Gtk::ListBoxRow* MainWindow::make_row(const Glib::ustring& title,
     auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 2);
     box->set_margin_start(12);
     box->set_margin_end(12);
-    box->set_margin_top(8);
-    box->set_margin_bottom(8);
+    box->set_margin_top(10);
+    box->set_margin_bottom(10);
 
     auto* title_box =
         Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
@@ -101,50 +131,78 @@ Gtk::ListBoxRow* MainWindow::make_row(const Glib::ustring& title,
     return row;
 }
 
+Gtk::Label* MainWindow::make_section_label(const Glib::ustring& text) {
+    auto* l = Gtk::make_managed<Gtk::Label>(text);
+    l->set_halign(Gtk::Align::START);
+    l->set_xalign(0.0f);
+    l->set_margin_start(6);
+    l->set_margin_bottom(6);
+    l->add_css_class("section-label");
+    return l;
+}
+
 void MainWindow::build_ui() {
     set_title("MetaShare Streamer");
-    set_default_size(520, 720);
+    set_default_size(480, 620);
     set_resizable(true);
 
+    inject_css_provider();
+
     // ---- Header bar ---------------------------------------------------------
-    btn_start_.set_label("Start Stream");
-    btn_start_.add_css_class("suggested-action");
-    btn_start_.signal_clicked().connect(
-        sigc::mem_fun(*this, &MainWindow::on_start_clicked));
-
-    btn_stop_.set_label("Stop");
-    btn_stop_.add_css_class("destructive-action");
-    btn_stop_.set_visible(false);
-    btn_stop_.signal_clicked().connect(
-        sigc::mem_fun(*this, &MainWindow::on_stop_clicked));
-
-    header_.pack_start(btn_start_);
-    header_.pack_start(btn_stop_);
-
-    auto* title_box =
-        Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
-    title_box->set_halign(Gtk::Align::CENTER);
-    auto* title = Gtk::make_managed<Gtk::Label>();
-    title->set_markup("<b>MetaShare Streamer</b>");
-    title->set_single_line_mode(true);
-    status_label_.set_text("Idle");
-    status_label_.set_single_line_mode(true);
-    status_label_.add_css_class("dim-label");
-    title_box->append(*title);
-    title_box->append(status_label_);
-    header_.set_title_widget(*title_box);
-
+    // Keep the decoration clean: just the app name centred in the title slot.
+    // Modern GNOME apps put the primary action either in the headerbar or as a
+    // prominent button in the content area — we do the latter so the user can
+    // always see status at a glance.
+    auto* title_widget = Gtk::make_managed<Gtk::Label>();
+    title_widget->set_text("MetaShare Streamer");
+    title_widget->add_css_class("title");
+    header_.set_title_widget(*title_widget);
     set_titlebar(header_);
+    header_.set_show_title_buttons(true);
 
     // ---- Main column --------------------------------------------------------
-    auto* root = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
-    root->set_margin_start(12);
-    root->set_margin_end(12);
-    root->set_margin_top(12);
-    root->set_margin_bottom(12);
+    auto* root = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 18);
+    root->set_margin_start(18);
+    root->set_margin_end(18);
+    root->set_margin_top(18);
+    root->set_margin_bottom(18);
 
+    // --- Status row + primary action -----------------------------------------
+    // A compact "current state" line on the left and a big Start/Stop button
+    // filling the rest of the width.
+    auto* status_row =
+        Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+    status_row->set_valign(Gtk::Align::CENTER);
+
+    status_dot_.set_size_request(10, 10);
+    status_dot_.add_css_class("status-dot");
+    status_dot_.add_css_class("status-idle");
+    status_row->append(status_dot_);
+
+    status_label_.set_text("Idle");
+    status_label_.set_xalign(0.0f);
+    status_label_.set_halign(Gtk::Align::START);
+    status_label_.set_hexpand(true);
+    status_label_.add_css_class("dim-label");
+    status_row->append(status_label_);
+
+    btn_primary_.set_label("Start Streaming");
+    btn_primary_.add_css_class("suggested-action");
+    btn_primary_.add_css_class("primary-action");
+    // A play-symbol up front makes the call-to-action obvious; toggled to a
+    // stop symbol when the stream is live.
+    btn_primary_.set_icon_name("media-playback-start-symbolic");
+    btn_primary_.signal_clicked().connect(
+        sigc::mem_fun(*this, &MainWindow::on_primary_clicked));
+    status_row->append(btn_primary_);
+
+    root->append(*status_row);
+
+    // --- Settings list -------------------------------------------------------
     settings_box_.set_orientation(Gtk::Orientation::VERTICAL);
     settings_box_.set_spacing(0);
+
+    root->append(*make_section_label("Encoder"));
 
     auto* list = Gtk::make_managed<Gtk::ListBox>();
     list->set_selection_mode(Gtk::SelectionMode::NONE);
@@ -157,83 +215,15 @@ void MainWindow::build_ui() {
         }
     });
 
-    // --- Source ---
+    // --- Codec ---
     {
-        drop_source_.set_model(
-            Gtk::StringList::create({"Test pattern", "Wayland portal"}));
-        drop_source_.set_tooltip_text(
-            "Test pattern draws a synthetic moving image — use it when "
-            "developing without a Wayland session. Portal captures a real "
-            "Wayland monitor via xdg-desktop-portal.");
-        drop_source_.property_selected().signal_changed().connect(
-            sigc::mem_fun(*this, &MainWindow::on_source_changed));
-        list->append(*make_row(
-            "Capture source",
-            "Test pattern works anywhere; portal needs a Wayland session.",
-            drop_source_));
-    }
-
-    // --- Aspect ratio preset ---
-    {
-        std::vector<Glib::ustring> labels;
-        for (const auto& p : kPresets) labels.emplace_back(p.label);
-        drop_aspect_.set_model(Gtk::StringList::create(labels));
-        drop_aspect_.property_selected().signal_changed().connect(
-            sigc::mem_fun(*this, &MainWindow::on_aspect_preset_changed));
-        list->append(
-            *make_row("Aspect ratio",
-                      "Used to keep width/height in proportion when locked.",
-                      drop_aspect_));
-    }
-
-    // --- Width / Height ---
-    {
-        spin_width_.set_range(kMinDim, kMaxDim);
-        spin_width_.set_increments(2, 16);
-        spin_width_.set_numeric(true);
-        spin_width_.set_value(1920);
-        spin_width_.signal_value_changed().connect(
-            sigc::mem_fun(*this, &MainWindow::on_width_changed));
-
-        spin_height_.set_range(kMinDim, kMaxDim);
-        spin_height_.set_increments(2, 16);
-        spin_height_.set_numeric(true);
-        spin_height_.set_value(1080);
-        spin_height_.signal_value_changed().connect(
-            sigc::mem_fun(*this, &MainWindow::on_height_changed));
-
-        auto* dims =
-            Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
-        spin_width_.set_width_chars(6);
-        spin_height_.set_width_chars(6);
-        dims->append(spin_width_);
-        auto* x = Gtk::make_managed<Gtk::Label>("×");
-        dims->append(*x);
-        dims->append(spin_height_);
-        list->append(*make_row(
-            "Resolution",
-            "Only applies to the test source. Rounded to even numbers.",
-            *dims));
-    }
-
-    // --- Lock aspect switch ---
-    {
-        sw_lock_.set_active(true);
-        sw_lock_.property_active().signal_changed().connect(
-            sigc::mem_fun(*this, &MainWindow::on_lock_toggled));
-        list->append(*make_row(
-            "Lock aspect ratio",
-            "When on, editing one dimension updates the other.", sw_lock_));
-    }
-
-    // --- FPS ---
-    {
-        spin_fps_.set_range(kMinFps, kMaxFps);
-        spin_fps_.set_increments(1, 5);
-        spin_fps_.set_numeric(true);
-        spin_fps_.set_value(60);
-        list->append(*make_row(
-            "Frame rate", "Frames per second sent to the encoder.", spin_fps_));
+        drop_codec_.set_model(
+            Gtk::StringList::create({"HEVC (H.265)", "H.264"}));
+        drop_codec_.set_tooltip_text(
+            "HEVC gives better quality per bit and is the default. H.264 is "
+            "the fallback if no HEVC decoder is available on the headset.");
+        list->append(*make_row("Codec", "HEVC is recommended for Meta Quest.",
+                               drop_codec_));
     }
 
     // --- Bitrate ---
@@ -242,159 +232,65 @@ void MainWindow::build_ui() {
         spin_bitrate_.set_increments(500, 5000);
         spin_bitrate_.set_numeric(true);
         spin_bitrate_.set_value(15000);
-        list->append(*make_row("Bitrate",
-                               "Encoder target, in kbps. 15 000 ≈ 1080p60.",
-                               spin_bitrate_));
-    }
-
-    // --- Codec ---
-    {
-        drop_codec_.set_model(
-            Gtk::StringList::create({"HEVC (H.265)", "H.264"}));
-        list->append(*make_row("Codec",
-                               "HEVC falls back to software H.264 if no HW "
-                               "HEVC encoder is available.",
-                               drop_codec_));
-    }
-
-    // --- Hardware accel ---
-    {
-        sw_hw_.set_active(true);
-        list->append(*make_row("Hardware encoder",
-                               "Use VAAPI/NVENC when available. Disable to "
-                               "force software encoding.",
-                               sw_hw_));
-    }
-
-    // --- Port ---
-    {
-        spin_port_.set_range(kMinPort, kMaxPort);
-        spin_port_.set_increments(1, 10);
-        spin_port_.set_numeric(true);
-        spin_port_.set_value(7778);
-        list->append(*make_row("TCP stream port",
-                               "Where clients connect for the video stream.",
-                               spin_port_));
-    }
-
-    // --- Discovery ---
-    {
-        sw_discovery_.set_active(true);
+        spin_bitrate_.set_width_chars(7);
+        auto* wrap =
+            Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+        wrap->append(spin_bitrate_);
+        auto* unit = Gtk::make_managed<Gtk::Label>("kbps");
+        unit->add_css_class("dim-label");
+        wrap->append(*unit);
         list->append(*make_row(
-            "UDP discovery",
-            "Broadcast the streamer on UDP 7777 so clients need no address.",
-            sw_discovery_));
+            "Bitrate", "Target encoder bitrate. 15 000 ≈ 1080p60.", *wrap));
     }
 
-    // --- Streamer binary override ---
+    // --- Frame rate ---
     {
-        entry_streamer_path_.set_placeholder_text(
-            "auto (" + Glib::ustring(kStreamerBinary) + ")");
-        entry_streamer_path_.set_width_chars(20);
-        list->append(
-            *make_row("Streamer binary",
-                      "Optional override. Leave empty to search $PATH.",
-                      entry_streamer_path_));
+        spin_fps_.set_range(kMinFps, kMaxFps);
+        spin_fps_.set_increments(1, 5);
+        spin_fps_.set_numeric(true);
+        spin_fps_.set_value(60);
+        spin_fps_.set_width_chars(5);
+        auto* wrap =
+            Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+        wrap->append(spin_fps_);
+        auto* unit = Gtk::make_managed<Gtk::Label>("fps");
+        unit->add_css_class("dim-label");
+        wrap->append(*unit);
+        list->append(*make_row(
+            "Frame rate", "Frames per second sent to the encoder.", *wrap));
     }
 
     settings_box_.append(*list);
     root->append(settings_box_);
 
     // ---- Log area ----
-    auto* log_label = Gtk::make_managed<Gtk::Label>();
-    log_label->set_markup("<b>Streamer output</b>");
-    log_label->set_halign(Gtk::Align::START);
-    log_label->set_margin_top(12);
-    log_label->set_margin_bottom(4);
+    auto* log_label = make_section_label("Streamer output");
+    log_label->set_margin_top(6);
     root->append(*log_label);
 
+    auto* log_frame = Gtk::make_managed<Gtk::Frame>();
+    log_frame->set_child(log_scroll_);
     log_buf_ = Gtk::TextBuffer::create();
     log_view_.set_buffer(log_buf_);
     log_view_.set_editable(false);
     log_view_.set_cursor_visible(false);
     log_view_.set_monospace(true);
     log_view_.set_wrap_mode(Gtk::WrapMode::WORD);
+    log_view_.set_top_margin(8);
+    log_view_.set_bottom_margin(8);
+    log_view_.set_left_margin(8);
+    log_view_.set_right_margin(8);
     log_scroll_.set_child(log_view_);
-    log_scroll_.set_size_request(-1, 160);
+    log_scroll_.set_size_request(-1, 180);
     log_scroll_.set_vexpand(true);
     log_scroll_.set_policy(Gtk::PolicyType::AUTOMATIC,
                            Gtk::PolicyType::AUTOMATIC);
-    root->append(log_scroll_);
+    root->append(*log_frame);
 
     set_child(*root);
 
     // Initial state.
-    on_source_changed();
-}
-
-// ---------------------------------------------------------------------------
-// Resolution helpers
-// ---------------------------------------------------------------------------
-
-int MainWindow::round_even(int v) {
-    if (v < kMinDim) v = kMinDim;
-    if (v > kMaxDim) v = kMaxDim;
-    return v & ~1;  // clear low bit (must be even for H.264/HEVC)
-}
-
-int MainWindow::current_aspect_num() const {
-    const auto idx = drop_aspect_.get_selected();
-    if (idx >= std::size(kPresets)) return 16;
-    return kPresets[idx].num;
-}
-
-int MainWindow::current_aspect_den() const {
-    const auto idx = drop_aspect_.get_selected();
-    if (idx >= std::size(kPresets)) return 9;
-    return kPresets[idx].den;
-}
-
-void MainWindow::on_lock_toggled() {
-    if (sw_lock_.get_active()) {
-        // Snap current dimensions to the chosen ratio.
-        updating_dims_ = true;
-        int h = round_even(spin_width_.get_value_as_int() *
-                           current_aspect_den() / current_aspect_num());
-        spin_height_.set_value(h);
-        updating_dims_ = false;
-    }
-}
-
-void MainWindow::on_aspect_preset_changed() {
-    if (!sw_lock_.get_active()) return;
-    updating_dims_ = true;
-    int h = round_even(spin_width_.get_value_as_int() * current_aspect_den() /
-                       current_aspect_num());
-    spin_height_.set_value(h);
-    updating_dims_ = false;
-}
-
-void MainWindow::on_width_changed() {
-    if (updating_dims_ || !sw_lock_.get_active()) return;
-    updating_dims_ = true;
-    int h = round_even(spin_width_.get_value_as_int() * current_aspect_den() /
-                       current_aspect_num());
-    spin_height_.set_value(h);
-    updating_dims_ = false;
-}
-
-void MainWindow::on_height_changed() {
-    if (updating_dims_ || !sw_lock_.get_active()) return;
-    updating_dims_ = true;
-    int w = round_even(spin_height_.get_value_as_int() * current_aspect_num() /
-                       current_aspect_den());
-    spin_width_.set_value(w);
-    updating_dims_ = false;
-}
-
-void MainWindow::on_source_changed() {
-    // Width/height only affect the test source; the portal source uses the
-    // monitor's own resolution.
-    const bool portal = drop_source_.get_selected() == 1;
-    spin_width_.set_sensitive(!portal);
-    spin_height_.set_sensitive(!portal);
-    drop_aspect_.set_sensitive(!portal);
-    sw_lock_.set_sensitive(!portal);
+    set_status("Idle", "status-idle");
 }
 
 // ---------------------------------------------------------------------------
@@ -402,14 +298,6 @@ void MainWindow::on_source_changed() {
 // ---------------------------------------------------------------------------
 
 Glib::ustring MainWindow::resolve_streamer_path() const {
-    Glib::ustring ov = entry_streamer_path_.get_text();
-    if (!ov.empty()) {
-        if (::access(ov.c_str(), X_OK) == 0) return ov;
-        // Could be a bare name to be looked up in PATH.
-        std::string found = Glib::find_program_in_path(ov.raw());
-        if (!found.empty()) return Glib::ustring(found);
-        // Fall through to default lookup so we still produce a helpful message.
-    }
     std::string found = Glib::find_program_in_path(kStreamerBinary);
     if (!found.empty()) return Glib::ustring(found);
     // Dev convenience: ./build/src/streamer/metashare-streamer
@@ -423,18 +311,16 @@ std::vector<std::string> MainWindow::build_argv() const {
     argv.push_back(resolve_streamer_path().raw());
     if (argv.front().empty()) return {};  // caller checks and reports
 
-    const bool portal = drop_source_.get_selected() == 1;
+    // The streamer's own defaults handle most things. We only override:
+    //   --source portal  — always virtual monitors (not the physical screen),
+    //                       so the Quest gets dedicated virtual displays.
+    //   --monitors N     — stream kVirtualDisplays virtual displays.
+    //   --fps/--bitrate/--codec — the three knobs exposed in the UI.
     argv.push_back("--source");
-    argv.push_back(portal ? "portal" : "test");
+    argv.push_back("portal");
 
-    if (!portal) {
-        argv.push_back("--width");
-        argv.push_back(
-            std::to_string(round_even(spin_width_.get_value_as_int())));
-        argv.push_back("--height");
-        argv.push_back(
-            std::to_string(round_even(spin_height_.get_value_as_int())));
-    }
+    argv.push_back("--monitors");
+    argv.push_back(std::to_string(kVirtualDisplays));
 
     argv.push_back("--fps");
     argv.push_back(std::to_string(spin_fps_.get_value_as_int()));
@@ -445,32 +331,23 @@ std::vector<std::string> MainWindow::build_argv() const {
     argv.push_back("--codec");
     argv.push_back(drop_codec_.get_selected() == 1 ? "h264" : "hevc");
 
-    if (!sw_hw_.get_active()) argv.push_back("--no-hw");
-
-    argv.push_back("--port");
-    argv.push_back(std::to_string(spin_port_.get_value_as_int()));
-
-    if (!sw_discovery_.get_active()) argv.push_back("--no-discovery");
-
     return argv;
 }
 
-void MainWindow::on_start_clicked() {
-    if (running_) return;
-    start_streamer();
-}
-
-void MainWindow::on_stop_clicked() {
-    if (!running_) return;
-    stop_streamer();
+void MainWindow::on_primary_clicked() {
+    if (running_) {
+        stop_streamer();
+    } else {
+        start_streamer();
+    }
 }
 
 void MainWindow::start_streamer() {
     auto argv = build_argv();
     if (argv.empty() || argv.front().empty()) {
         append_log("Could not find the streamer binary.\n"
-                   "Install metashare-streamer or set a path under 'Streamer "
-                   "binary'.\n");
+                   "Install metashare-streamer somewhere on $PATH.\n");
+        set_status("Streamer not found", "status-error");
         return;
     }
 
@@ -484,13 +361,17 @@ void MainWindow::start_streamer() {
     try {
         Glib::spawn_async_with_pipes(
             /* working_directory */ "", argv,
-            /* envp */ {},
+            // NOTE: no envp argument → child inherits the parent's environment.
+            // Passing {} would give the child an EMPTY environment (no
+            // DBUS_SESSION_BUS_ADDRESS, no WAYLAND_DISPLAY, etc.), which breaks
+            // the portal source.
             Glib::SpawnFlags::DO_NOT_REAP_CHILD | Glib::SpawnFlags::SEARCH_PATH,
             /* child_setup */ sigc::slot<void()>(), &pid, /* stdin */ nullptr,
             &out_fd, &err_fd);
     } catch (const Glib::Error& e) {
         append_log(Glib::ustring("Failed to start streamer: ") + e.what() +
                    "\n");
+        set_status("Failed to start", "status-error");
         return;
     }
 
@@ -520,12 +401,12 @@ void MainWindow::start_streamer() {
     child_watch_conn_ = Glib::signal_child_watch().connect(
         sigc::mem_fun(*this, &MainWindow::on_child_exited), pid_);
 
-    status_label_.set_text("Running");
+    set_status("Streaming", "status-running");
 }
 
 void MainWindow::stop_streamer() {
     if (!running_) return;
-    status_label_.set_text("Stopping…");
+    set_status("Stopping…", "status-busy");
     if (pid_ > 0) {
         // The streamer installs SIGINT/SIGTERM handlers and shuts down cleanly.
         ::kill(pid_, SIGTERM);
@@ -556,13 +437,16 @@ void MainWindow::on_child_exited(GPid pid, int status) {
     }
 
     pid_ = 0;
+    const bool was_running = running_;
     running_ = false;
     apply_running_state(false);
 
     Glib::ustring tail;
+    Glib::ustring dot_class = "status-idle";
     if (WIFEXITED(status)) {
-        tail = "streamer exited (code " + std::to_string(WEXITSTATUS(status)) +
-               ")\n";
+        const int code = WEXITSTATUS(status);
+        tail = "streamer exited (code " + std::to_string(code) + ")\n";
+        if (was_running && code != 0) dot_class = "status-error";
     } else if (WIFSIGNALED(status)) {
         tail = "streamer killed (signal " + std::to_string(WTERMSIG(status)) +
                ")\n";
@@ -570,7 +454,12 @@ void MainWindow::on_child_exited(GPid pid, int status) {
         tail = "streamer exited\n";
     }
     append_log("\n[" + tail + "]\n");
-    status_label_.set_text("Idle");
+
+    if (was_running && WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+        set_status("Crashed", dot_class);
+    } else {
+        set_status("Idle", dot_class);
+    }
 }
 
 bool MainWindow::on_pipe_io(Glib::IOCondition cond, int fd) {
@@ -595,11 +484,32 @@ bool MainWindow::on_pipe_io(Glib::IOCondition cond, int fd) {
 }
 
 void MainWindow::apply_running_state(bool running) {
-    btn_start_.set_visible(!running);
-    btn_stop_.set_visible(running);
     // Lock all settings while the streamer is running — changing them would
     // need a restart anyway.
     settings_box_.set_sensitive(!running);
+
+    if (running) {
+        btn_primary_.set_label("Stop Streaming");
+        btn_primary_.remove_css_class("suggested-action");
+        btn_primary_.add_css_class("destructive-action");
+        btn_primary_.set_icon_name("media-playback-stop-symbolic");
+    } else {
+        btn_primary_.set_label("Start Streaming");
+        btn_primary_.remove_css_class("destructive-action");
+        btn_primary_.add_css_class("suggested-action");
+        btn_primary_.set_icon_name("media-playback-start-symbolic");
+    }
+}
+
+void MainWindow::set_status(const Glib::ustring& text,
+                            const Glib::ustring& dot_class) {
+    status_label_.set_text(text);
+    // Swap the dot's colour class.
+    status_dot_.remove_css_class("status-idle");
+    status_dot_.remove_css_class("status-running");
+    status_dot_.remove_css_class("status-busy");
+    status_dot_.remove_css_class("status-error");
+    status_dot_.add_css_class(dot_class);
 }
 
 void MainWindow::append_log(const Glib::ustring& text) {

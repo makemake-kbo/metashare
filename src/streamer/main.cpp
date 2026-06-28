@@ -72,7 +72,13 @@ void usage(const char* argv0) {
         "build)\n"
         "                                test:   synthetic test patterns\n"
         "                                portal: xdg-desktop-portal (any "
-        "compositor)\n"
+"compositor)\n"
+        "                                        window 0 = real physical "
+"monitor,\n"
+        "                                        windows 1..N-1 = virtual "
+"monitors\n"
+        "                                        (shown in the app only when "
+"selected)\n"
         "                                mutter: GNOME direct — physical "
         "monitor\n"
         "                                        for window 0 (via portal) "
@@ -179,13 +185,14 @@ make_source(const Options& o, int monitor_index,
     }
     if (o.source == "portal") {
 #ifdef METASHARE_HAVE_PORTAL
-        if (o.monitors > 1) {
-            PortalOptions opts;
-            opts.source_types = 4;  // VIRTUAL
-            opts.fps_hint = o.fps;
-            return std::make_unique<PortalPipeWireSource>(opts);
-        }
-        return std::make_unique<PortalPipeWireSource>(o.fps);
+        // Monitor 0: the user's real physical display (source_type=MONITOR
+        // brings up the standard GNOME picker once for the actual screen).
+        // Monitors 1..N-1: virtual monitors (source_type=VIRTUAL) that the
+        // client only opens when selected in the app's monitor menu.
+        PortalOptions opts;
+        opts.source_types = (monitor_index == 0) ? 1u : 4u;  // MONITOR : VIRTUAL
+        opts.fps_hint = o.fps;
+        return std::make_unique<PortalPipeWireSource>(opts);
 #else
         err = "this build has no portal support; rebuild with portal deps or "
               "use --source test";
