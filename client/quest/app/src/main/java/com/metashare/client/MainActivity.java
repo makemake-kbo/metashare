@@ -6,9 +6,7 @@ import android.graphics.Color;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.Gravity;
-import android.view.Surface;
 import android.view.SurfaceHolder;
-import android.view.SurfaceView;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
@@ -16,6 +14,10 @@ import android.widget.FrameLayout;
 import android.widget.PopupMenu;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import org.webrtc.EglBase;
+import org.webrtc.RendererCommon;
+import org.webrtc.SurfaceViewRenderer;
 
 import java.util.HashSet;
 import java.util.Set;
@@ -26,7 +28,8 @@ public final class MainActivity extends Activity
     private static final String TAG = "MetaShare2D";
     static final int MAX_MONITORS = 3;
 
-    private SurfaceView surfaceView;
+    private SurfaceViewRenderer surfaceView;
+    private EglBase eglBase;
     private FrameLayout root;
     private TextView statusView;
     private int monitorCount = 1;
@@ -42,7 +45,11 @@ public final class MainActivity extends Activity
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
-        surfaceView = new SurfaceView(this);
+        // One shared EGL context per Activity — SurfaceViewRenderer needs it
+        // for both its own GL rendering and the underlying decoder.
+        eglBase = EglBase.create();
+
+        surfaceView = new SurfaceViewRenderer(this);
         surfaceView.getHolder().addCallback(this);
 
         statusView = new TextView(this);
@@ -129,11 +136,31 @@ public final class MainActivity extends Activity
 
     @Override
     public void surfaceCreated(SurfaceHolder holder) {
+        try {
+            surfaceView.init(eglBase.getEglBaseContext(), rendererEvents);
+            surfaceView.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT);
+            surfaceView.setMirror(false);
+        } catch (Exception e) {
+            Log.e(TAG, "SurfaceViewRenderer.init failed", e);
+        }
         if (session == null) {
-            session = new StreamSession(this, holder.getSurface(), 0, this);
+            session = new StreamSession(this, surfaceView, 0, this);
             session.start();
         }
     }
+
+    private final RendererCommon.RendererEvents rendererEvents =
+            new RendererCommon.RendererEvents() {
+                @Override public void onFirstFrameRendered() {
+                    Log.i(TAG, "first frame rendered");
+                }
+                @Override
+                public void onFrameResolutionChanged(int w, int h, int rotation) {
+                    streamWidth = w;
+                    streamHeight = h;
+                    runOnUiThread(MainActivity.this::applyAspectRatio);
+                }
+            };
 
     @Override
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {}
@@ -141,11 +168,17 @@ public final class MainActivity extends Activity
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
         // Don't stop — Quest may recreate the surface; StreamSession retries.
+        // SurfaceViewRenderer.release() is deferred to onDestroy().
     }
 
     @Override
     protected void onDestroy() {
         if (session != null) { session.stop(); session = null; }
+        try { surfaceView.release(); } catch (Exception ignored) {}
+        if (eglBase != null) {
+            eglBase.release();
+            eglBase = null;
+        }
         launchedSecondaries.clear();
         super.onDestroy();
     }
@@ -157,9 +190,8 @@ public final class MainActivity extends Activity
 
     @Override
     public void onStreamSize(int width, int height) {
-        streamWidth = width;
-        streamHeight = height;
-        runOnUiThread(this::applyAspectRatio);
+        // RendererCommon.RendererEvents delivers real frame dimensions now;
+        // this legacy callback is a no-op kept for source compat.
     }
 
     private void applyAspectRatio() {

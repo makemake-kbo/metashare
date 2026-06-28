@@ -6,13 +6,16 @@ import android.os.Bundle;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.SurfaceHolder;
-import android.view.SurfaceView;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.PopupMenu;
 import android.widget.TextView;
+
+import org.webrtc.EglBase;
+import org.webrtc.RendererCommon;
+import org.webrtc.SurfaceViewRenderer;
 
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -23,7 +26,8 @@ public final class MonitorActivity extends Activity
 
     static final CopyOnWriteArrayList<MonitorActivity> active = new CopyOnWriteArrayList<>();
 
-    private SurfaceView surfaceView;
+    private SurfaceViewRenderer surfaceView;
+    private EglBase eglBase;
     private FrameLayout root;
     private TextView statusView;
     private StreamSession session;
@@ -38,7 +42,11 @@ public final class MonitorActivity extends Activity
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
-        surfaceView = new SurfaceView(this);
+        // One shared EGL context per Activity — SurfaceViewRenderer needs it
+        // for both its own GL rendering and the underlying MediaCodec decoder.
+        eglBase = EglBase.create();
+
+        surfaceView = new SurfaceViewRenderer(this);
         surfaceView.getHolder().addCallback(this);
 
         statusView = new TextView(this);
@@ -107,11 +115,34 @@ public final class MonitorActivity extends Activity
 
     @Override
     public void surfaceCreated(SurfaceHolder holder) {
+        // SurfaceViewRenderer.init() must be called once before frames can
+        // be added. Use SCALE_ASPECT_FIT so the stream letterboxes inside
+        // the View rather than stretching.
+        try {
+            surfaceView.init(eglBase.getEglBaseContext(), rendererEvents);
+            surfaceView.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT);
+            surfaceView.setMirror(false);
+        } catch (Exception e) {
+            Log.e(TAG, "SurfaceViewRenderer.init failed", e);
+        }
         if (session == null) {
-            session = new StreamSession(this, holder.getSurface(), monitorIndex, this);
+            session = new StreamSession(this, surfaceView, monitorIndex, this);
             session.start();
         }
     }
+
+    private final RendererCommon.RendererEvents rendererEvents =
+            new RendererCommon.RendererEvents() {
+                @Override public void onFirstFrameRendered() {
+                    Log.i(TAG, "first frame rendered");
+                }
+                @Override
+                public void onFrameResolutionChanged(int w, int h, int rotation) {
+                    streamWidth = w;
+                    streamHeight = h;
+                    runOnUiThread(MonitorActivity.this::applyAspectRatio);
+                }
+            };
 
     @Override
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {}
@@ -119,12 +150,18 @@ public final class MonitorActivity extends Activity
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
         // Don't stop — StreamSession retries with new surface.
+        // SurfaceViewRenderer.release() is deferred to onDestroy().
     }
 
     @Override
     protected void onDestroy() {
         active.remove(this);
         if (session != null) { session.stop(); session = null; }
+        try { surfaceView.release(); } catch (Exception ignored) {}
+        if (eglBase != null) {
+            eglBase.release();
+            eglBase = null;
+        }
         Log.i(TAG, "Monitor " + (monitorIndex + 1) + " destroyed");
         super.onDestroy();
     }
@@ -139,9 +176,8 @@ public final class MonitorActivity extends Activity
 
     @Override
     public void onStreamSize(int width, int height) {
-        streamWidth = width;
-        streamHeight = height;
-        runOnUiThread(this::applyAspectRatio);
+        // RendererCommon.RendererEvents delivers real frame dimensions now;
+        // this legacy callback is a no-op kept for source compat.
     }
 
     private void applyAspectRatio() {
@@ -156,9 +192,12 @@ public final class MonitorActivity extends Activity
         } else {
             targetH = ch; targetW = Math.round(ch * streamRatio);
         }
-        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) surfaceView.getLayoutParams();
-        if (lp == null || lp.width != targetW || lp.height != targetH || lp.gravity != Gravity.CENTER) {
-            surfaceView.setLayoutParams(new FrameLayout.LayoutParams(targetW, targetH, Gravity.CENTER));
+        FrameLayout.LayoutParams lp =
+                (FrameLayout.LayoutParams) surfaceView.getLayoutParams();
+        if (lp == null || lp.width != targetW || lp.height != targetH
+                || lp.gravity != Gravity.CENTER) {
+            surfaceView.setLayoutParams(
+                    new FrameLayout.LayoutParams(targetW, targetH, Gravity.CENTER));
         }
     }
 }

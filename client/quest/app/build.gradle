@@ -24,4 +24,21 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+
+    // libwebrtc is a chunky native lib — strip unused ABIs from the APK so it
+    // stays small enough to push to the Quest over ADB without complaint.
+    splits {
+        abi {
+            enable true
+            reset()
+            include 'arm64-v8a'
+            universalApk false
+        }
+    }
+}
+
+dependencies {
+    // Active fork of Google's libwebrtc Android distribution. HEVC decode
+    // (used by HardwareVideoDecoderFactory) works out of the box on Quest 3.
+    implementation 'io.getstream:stream-webrtc-android:1.3.10'
 }
