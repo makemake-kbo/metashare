@@ -1,8 +1,8 @@
 // MetaShare streamer CLI.
 //
 // Pipeline (per monitor):
-//   FrameSource -> Encoder (HEVC HW, H.264 SW fallback) -> NetServer (TCP)
-// Multiple monitors run as parallel pipelines, each on its own TCP port
+//   FrameSource -> Encoder (HEVC HW, H.264 SW fallback) -> WebRtcServer (UDP)
+// Multiple monitors run as parallel pipelines, each on its own signaling port
 // (base, base+1, …) and its own capture thread.
 // DiscoveryResponder (UDP) lets clients find us with no config.
 
@@ -12,7 +12,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -24,9 +26,8 @@ extern "C" {
 #include "discovery.hpp"
 #include "encoder.hpp"
 #include "frame_source.hpp"
-#include "net_server.hpp"
-#include "protocol.hpp"
-#include "test_pattern_source.hpp"
+#include "signaling.hpp"
+#include "webrtc_server.hpp"
 
 #ifdef METASHARE_HAVE_PORTAL
 #include "portal_pipewire_source.hpp"
@@ -36,6 +37,15 @@ extern "C" {
 #include "mutter_screencast.hpp"
 #include "mutter_virtual_source.hpp"
 #endif
+
+#if defined(METASHARE_HAVE_PORTAL) || defined(METASHARE_HAVE_MUTTER)
+#include "audio_encoder.hpp"
+#include "audio_source.hpp"
+#include "pipewire_audio_source.hpp"
+#endif
+
+#include "test_pattern_source.hpp"
+#include "test_tone_source.hpp"
 
 using namespace metashare;
 
@@ -58,10 +68,23 @@ struct Options {
     int bitrate_kbps = 15000;
     std::string codec = "hevc";
     bool hardware = true;
-    std::uint16_t port = proto::kStreamPort;
+    std::uint16_t port = signal::kDefaultSignalingPort;
     bool discovery = true;
     int monitors = 1;
+    // Comma-separated list of audio channels to stream. "none" disables audio
+    // entirely; recognised names are "system" (desktop output loopback),
+    // "mic" (host microphone), "test" (synthetic 440 Hz tone). Defaults to
+    // "system,mic" when audio is built in and the source is real (i.e. not
+    // the test pattern source); empty when the audio TU isn't linked.
+    std::string audio = "";
+    int audio_bitrate_kbps = 96;
 };
+
+// Wire-level channel ids (kept as bare constants since the new WebRTC
+// transport no longer ships them in a shared header — they only select
+// which RTP audio track broadcast_audio() targets).
+constexpr std::uint32_t kChannelAudioSystem = 1;
+constexpr std::uint32_t kChannelAudioMic = 2;
 
 void usage(const char* argv0) {
     std::fprintf(
@@ -72,13 +95,13 @@ void usage(const char* argv0) {
         "build)\n"
         "                                test:   synthetic test patterns\n"
         "                                portal: xdg-desktop-portal (any "
-"compositor)\n"
+        "compositor)\n"
         "                                        window 0 = real physical "
-"monitor,\n"
+        "monitor,\n"
         "                                        windows 1..N-1 = virtual "
-"monitors\n"
+        "monitors\n"
         "                                        (shown in the app only when "
-"selected)\n"
+        "selected)\n"
         "                                mutter: GNOME direct — physical "
         "monitor\n"
         "                                        for window 0 (via portal) "
@@ -94,8 +117,17 @@ void usage(const char* argv0) {
         "  --bitrate <kbps>       encoder bitrate (default 15000)\n"
         "  --codec <hevc|h264>    preferred codec (default hevc)\n"
         "  --no-hw                skip VAAPI/NVENC; force software encoding\n"
-        "  --port <n>             TCP base port (monitor i → port+i)\n"
+        "  --port <n>             signaling TCP base port (monitor i -> "
+        "port+i)\n"
         "  --no-discovery         disable UDP discovery responder\n"
+        "  --audio <list>         comma-separated audio channels to stream:\n"
+        "                            system  desktop output loopback\n"
+        "                            mic     host microphone\n"
+        "                            test    synthetic 440 Hz tone\n"
+        "                            none    disable audio entirely\n"
+        "                          (default: system,mic for portal/mutter,\n"
+        "                           none for test)\n"
+        "  --audio-bitrate <kbps> Opus target bitrate (default 96)\n"
         "  -h, --help             this help\n",
         argv0);
 }
@@ -151,13 +183,29 @@ bool parse_args(int argc, char** argv, Options& o) {
             o.port = static_cast<std::uint16_t>(p);
         } else if (a == "--no-discovery")
             o.discovery = false;
-        else {
+        else if (a == "--audio" && i + 1 < argc) {
+            o.audio = argv[++i];
+        } else if (a == "--audio-bitrate") {
+            if (!val(o.audio_bitrate_kbps)) return false;
+        } else {
             std::fprintf(stderr, "unknown arg: %s\n", a.c_str());
             return false;
         }
     }
     if (o.monitors < 1) o.monitors = 1;
     if (o.monitors > 8) o.monitors = 8;
+
+    // Apply the default audio mode if the user didn't say. We pick a sensible
+    // default based on the active video source: real Wayland capture gets the
+    // real desktop + mic, the test-pattern source gets a sine tone (so the
+    // audio pipeline still exercises).
+    if (o.audio.empty()) {
+#if defined(METASHARE_HAVE_PORTAL) || defined(METASHARE_HAVE_MUTTER)
+        o.audio = (o.source == "test") ? "test" : "system,mic";
+#else
+        o.audio = "none";
+#endif
+    }
     return true;
 }
 
@@ -166,10 +214,65 @@ struct Pipeline {
     int index = 0;
     std::unique_ptr<FrameSource> source;
     std::unique_ptr<Encoder> encoder;
-    std::unique_ptr<NetServer> server;
+    std::unique_ptr<WebRtcServer> server;
     std::thread thread;
     std::atomic<bool> running{false};
 };
+
+#if defined(METASHARE_HAVE_PORTAL) || defined(METASHARE_HAVE_MUTTER)
+// One capture→encode pipeline per audio channel. Encoded packets are fanned
+// out to *every* video pipeline's NetServer so a client that connected to any
+// monitor port gets the same audio. Bandwidth cost is tiny (~96 kbps/channel).
+struct AudioChannel {
+    std::uint32_t channel_id = 0;
+    std::unique_ptr<AudioSource> source;
+    std::unique_ptr<AudioEncoder> encoder;
+    std::thread thread;
+    std::atomic<bool> running{false};
+};
+
+// Parse the comma-separated --audio list into channel ids. Recognised tokens:
+// "none", "system", "mic", "test". Unknown tokens are an error.
+std::vector<std::uint32_t> parse_audio_list(const std::string& s,
+                                            std::string& err) {
+    std::vector<std::uint32_t> out;
+    std::stringstream ss(s);
+    std::string tok;
+    while (std::getline(ss, tok, ',')) {
+        // Trim whitespace.
+        auto p = tok.find_first_not_of(" \t");
+        if (p != std::string::npos) tok.erase(0, p);
+        auto q = tok.find_last_not_of(" \t");
+        if (q != std::string::npos) tok.erase(q + 1);
+        if (tok.empty()) continue;
+        if (tok == "none") {
+            out.clear();
+            return out;
+        }
+        // Map the token to its wire channel id. "test" re-uses the system
+        // channel slot so a client expecting desktop audio picks the synthetic
+        // tone up transparently; there is no separate test channel on the wire.
+        std::uint32_t id = 0;
+        bool recognized = true;
+        if (tok == "system" || tok == "test") {
+            id = kChannelAudioSystem;
+        } else if (tok == "mic") {
+            id = kChannelAudioMic;
+        } else {
+            recognized = false;
+        }
+        if (!recognized) {
+            err = "unknown --audio token: " + tok;
+            return {};
+        }
+        out.push_back(id);
+    }
+    // De-dup (e.g. "system,system").
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+#endif
 
 std::unique_ptr<FrameSource>
 make_source(const Options& o, int monitor_index,
@@ -190,7 +293,8 @@ make_source(const Options& o, int monitor_index,
         // Monitors 1..N-1: virtual monitors (source_type=VIRTUAL) that the
         // client only opens when selected in the app's monitor menu.
         PortalOptions opts;
-        opts.source_types = (monitor_index == 0) ? 1u : 4u;  // MONITOR : VIRTUAL
+        opts.source_types =
+            (monitor_index == 0) ? 1u : 4u;  // MONITOR : VIRTUAL
         opts.fps_hint = o.fps;
         return std::make_unique<PortalPipeWireSource>(opts);
 #else
@@ -315,6 +419,36 @@ int main(int argc, char** argv) {
 
     std::vector<std::unique_ptr<Pipeline>> pipelines;
 
+#if defined(METASHARE_HAVE_PORTAL) || defined(METASHARE_HAVE_MUTTER)
+    // Resolve the --audio list up front. Audio starts *after* the video
+    // pipelines are up so its fan-out list is non-empty when its threads
+    // come online.
+    std::string audio_err;
+    std::vector<std::uint32_t> audio_channels =
+        parse_audio_list(opt.audio, audio_err);
+    if (!audio_err.empty()) {
+        std::fprintf(stderr, "audio: %s\n", audio_err.c_str());
+        return 2;
+    }
+    bool want_sys = false, want_mic = false, want_test_tone = false;
+    for (std::uint32_t id : audio_channels) {
+        if (id == kChannelAudioSystem) want_sys = true;
+        if (id == kChannelAudioMic) want_mic = true;
+    }
+    if (opt.audio.find("test") != std::string::npos) {
+        want_test_tone = true;
+        want_sys = true;  // test tone replaces system audio
+    }
+    const AudioFormat audio_fmt{/*sample_rate=*/48000, /*channels=*/2};
+#else
+    if (!opt.audio.empty() && opt.audio != "none") {
+        std::fprintf(stderr,
+                     "audio: this build has no PipeWire support; rebuild with "
+                     "-Dportal=enabled or pass --audio none\n");
+        return 2;
+    }
+#endif
+
     for (int i = 0; i < opt.monitors; ++i) {
         auto p = std::make_unique<Pipeline>();
         p->index = i;
@@ -354,30 +488,42 @@ int main(int argc, char** argv) {
                          err.c_str());
             return 1;
         }
+        const bool is_h265 = (p->encoder->codec() == proto::Codec::kH265);
         std::fprintf(stderr, "[monitor %d] encoder: %s (%s)%s\n", i,
-                     p->encoder->codec_name(),
-                     p->encoder->codec() == proto::Codec::kH265 ? "HEVC"
-                                                                : "H.264",
+                     p->encoder->codec_name(), is_h265 ? "HEVC" : "H.264",
                      p->encoder->using_hardware() ? " hw" : " sw");
 
-        // --- server ---
-        p->server = std::make_unique<NetServer>();
-        proto::StreamHeader sh{};
-        std::memcpy(sh.magic, proto::kStreamMagic, sizeof(sh.magic));
-        sh.version = proto::kProtocolVersion;
-        sh.codec = static_cast<std::uint32_t>(p->encoder->codec());
-        sh.width = static_cast<std::uint32_t>(fmt.width);
-        sh.height = static_cast<std::uint32_t>(fmt.height);
-        sh.fps_num = static_cast<std::uint32_t>(fmt.fps_num);
-        sh.fps_den = static_cast<std::uint32_t>(fmt.fps_den);
-        p->server->set_stream_header(sh);
+        // --- WebRTC server (signaling + media transport) ---
+        p->server = std::make_unique<WebRtcServer>();
+        WebRtcVideoFormat vfmt;
+        vfmt.width = fmt.width;
+        vfmt.height = fmt.height;
+        vfmt.fps_num = fmt.fps_num;
+        vfmt.fps_den = fmt.fps_den;
+        vfmt.codec = is_h265 ? proto::Codec::kH265 : proto::Codec::kH264;
+        p->server->set_video_format(vfmt);
+#if defined(METASHARE_HAVE_PORTAL) || defined(METASHARE_HAVE_MUTTER)
+        // Audio tracks live on monitor 0's PeerConnection only — clients
+        // connected to other monitors get video-only. (Audio is system-wide
+        // anyway; one feed per machine is enough.)
+        if (i == 0) {
+            WebRtcAudioFormat afmt;
+            afmt.sample_rate = audio_fmt.sample_rate;
+            afmt.channels = audio_fmt.channels;
+            afmt.bitrate_kbps = opt.audio_bitrate_kbps;
+            p->server->set_audio_system_format(afmt);
+            p->server->set_audio_mic_format(afmt);
+            p->server->set_enable_audio_system(want_sys);
+            p->server->set_enable_audio_mic(want_mic);
+        }
+#endif
         const std::uint16_t port = static_cast<std::uint16_t>(opt.port + i);
         if (!p->server->start(port, err)) {
             std::fprintf(stderr, "[monitor %d] server start failed: %s\n", i,
                          err.c_str());
             return 1;
         }
-        std::fprintf(stderr, "[monitor %d] serving on tcp/%u\n", i,
+        std::fprintf(stderr, "[monitor %d] signaling on tcp/%u\n", i,
                      static_cast<unsigned>(port));
 
         pipelines.push_back(std::move(p));
@@ -403,11 +549,7 @@ int main(int argc, char** argv) {
         raw->thread = std::thread([raw] {
             auto sink = [raw](const std::uint8_t* data, std::size_t size,
                               std::int64_t pts_usec, bool key) {
-                proto::FrameHeader fh{};
-                fh.payload_size = static_cast<std::uint32_t>(size);
-                fh.flags = key ? proto::kFrameKeyframe : 0u;
-                fh.pts_usec = static_cast<std::uint64_t>(pts_usec);
-                raw->server->broadcast(fh, data);
+                raw->server->broadcast_video(data, size, pts_usec, key);
             };
             std::string thread_err;
             while (raw->running && !g_stop) {
@@ -443,10 +585,130 @@ int main(int argc, char** argv) {
 
     std::fprintf(stderr, "[streamer] %d monitor(s) running — Ctrl-C to stop\n",
                  opt.monitors);
+
+#if defined(METASHARE_HAVE_PORTAL) || defined(METASHARE_HAVE_MUTTER)
+    // --- audio threads ---
+    // Each audio channel captures → encodes → fans the encoded Opus packet out
+    // to *every* video pipeline's NetServer (audio is system-wide, not per
+    // monitor, so any client gets it regardless of which monitor port they
+    // connected to).
+    std::vector<std::unique_ptr<AudioChannel>> audio_pipelines;
+    if (want_sys || want_mic || want_test_tone) {
+        // Build the list of (channel_id, source) pairs.
+        struct AudioSpec {
+            std::uint32_t channel_id;
+            PipeWireAudioSource::Mode mode;
+            bool is_test;
+        };
+        std::vector<AudioSpec> specs;
+        if (want_test_tone) {
+            specs.push_back({kChannelAudioSystem, {}, /*is_test=*/true});
+        } else {
+            for (std::uint32_t id : audio_channels) {
+                if (id == kChannelAudioSystem)
+                    specs.push_back(
+                        {id, PipeWireAudioSource::Mode::kSystemSinkMonitor,
+                         /*is_test=*/false});
+                else if (id == kChannelAudioMic)
+                    specs.push_back({id, PipeWireAudioSource::Mode::kMicrophone,
+                                     /*is_test=*/false});
+            }
+        }
+
+        for (const auto& spec : specs) {
+            auto ac = std::make_unique<AudioChannel>();
+            ac->channel_id = spec.channel_id;
+
+            if (spec.is_test) {
+                ac->source = std::make_unique<TestToneSource>(audio_fmt);
+            } else {
+                ac->source =
+                    std::make_unique<PipeWireAudioSource>(spec.mode, audio_fmt);
+            }
+            if (!ac->source->start(err)) {
+                std::fprintf(stderr,
+                             "[audio:%u] source start failed: %s — disabling\n",
+                             spec.channel_id, err.c_str());
+                err.clear();
+                continue;
+            }
+
+            ac->encoder = std::make_unique<AudioEncoder>();
+            AudioEncoderConfig acfg;
+            acfg.format = audio_fmt;
+            acfg.bitrate_kbps = opt.audio_bitrate_kbps;
+            acfg.frame_ms = 20;
+            if (!ac->encoder->open(acfg, err)) {
+                std::fprintf(stderr,
+                             "[audio:%u] encoder open failed: %s — disabling\n",
+                             spec.channel_id, err.c_str());
+                err.clear();
+                ac->source->stop();
+                continue;
+            }
+
+            ac->running = true;
+            // Fan audio out to every monitor's WebRtcServer. Only monitor 0's
+            // PeerConnection has audio tracks wired up, but passing the others
+            // is harmless — broadcast_audio() is a no-op on tracks that don't
+            // exist for that peer.
+            std::vector<WebRtcServer*> sinks;
+            sinks.reserve(pipelines.size());
+            for (auto& p : pipelines) sinks.push_back(p->server.get());
+            const std::uint32_t cid = spec.channel_id;
+            auto* raw = ac.get();
+            ac->thread = std::thread([raw, sinks, cid] {
+                auto sink = [raw, sinks, cid](const std::uint8_t* data,
+                                              std::size_t size,
+                                              std::int64_t pts_usec) {
+                    for (WebRtcServer* s : sinks)
+                        s->broadcast_audio(cid, data, size, pts_usec);
+                };
+                std::string thread_err;
+                while (raw->running && !g_stop) {
+                    const std::int16_t* pcm = nullptr;
+                    std::int64_t pts = 0;
+                    int r = raw->source->next_chunk(&pcm, pts);
+                    if (r == 0) continue;
+                    if (r < 0) {
+                        std::fprintf(stderr, "[audio:%u] source ended\n", cid);
+                        break;
+                    }
+                    if (!raw->encoder->encode(pcm, r, pts, sink, thread_err)) {
+                        std::fprintf(stderr, "[audio:%u] encode error: %s\n",
+                                     cid, thread_err.c_str());
+                        break;
+                    }
+                }
+                raw->encoder->flush(sink);
+            });
+
+            const char* kind =
+                spec.is_test ? "test-tone"
+                : spec.mode == PipeWireAudioSource::Mode::kSystemSinkMonitor
+                    ? "system-output"
+                    : "microphone";
+            std::fprintf(stderr,
+                         "[audio:%u] %s capture running (opus %d kbps)\n",
+                         spec.channel_id, kind, opt.audio_bitrate_kbps);
+            audio_pipelines.push_back(std::move(ac));
+        }
+    }
+#endif
+
     while (!g_stop) std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     std::fprintf(stderr, "\n[streamer] shutting down\n");
     discovery.stop();
+
+#if defined(METASHARE_HAVE_PORTAL) || defined(METASHARE_HAVE_MUTTER)
+    for (auto& a : audio_pipelines) {
+        a->running = false;
+        a->source->stop();
+        if (a->thread.joinable()) a->thread.join();
+    }
+    audio_pipelines.clear();
+#endif
 
     for (auto& p : pipelines) {
         p->running = false;

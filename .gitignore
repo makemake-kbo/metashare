@@ -16,4 +16,4 @@
 # Flatpak: the manifests under flatpak/ are tracked; only the build cache and
 # the generated single-file bundles are ignored.
 /.flatpak-builder
-*.flatpak
+*.flatpakfiles.zip

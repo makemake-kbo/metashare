@@ -1,5 +1,5 @@
 // UDP discovery responder. Listens on the default discovery port for client
-// broadcast probes and replies with a unicast offer pointing at our TCP stream
+// broadcast probes and replies with a unicast offer pointing at our signaling
 // port — so the Quest client finds the host with zero configuration.
 
 #pragma once
@@ -19,7 +19,7 @@ class DiscoveryResponder {
     DiscoveryResponder(const DiscoveryResponder&) = delete;
     DiscoveryResponder& operator=(const DiscoveryResponder&) = delete;
 
-    bool start(std::uint16_t stream_port, std::uint16_t monitor_count,
+    bool start(std::uint16_t signaling_port, std::uint16_t monitor_count,
                std::string& err);
     void stop();
 
@@ -27,7 +27,7 @@ class DiscoveryResponder {
     void serve_loop();
 
     int fd_ = -1;
-    std::uint16_t stream_port_ = 0;
+    std::uint16_t signaling_port_ = 0;
     std::uint16_t monitor_count_ = 1;
     std::atomic<bool> running_{false};
     std::thread thread_;

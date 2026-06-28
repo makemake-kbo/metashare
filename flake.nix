@@ -20,6 +20,7 @@
           libdrm             # DMA-BUF frame import
           SDL2               # desktop test client window/render
           gtkmm4             # GTK4 control panel (client/gtk)
+          libdatachannel     # WebRTC (PeerConnection, RTP packetizers)
           # Schemas/icon theme the wrapped GTK4 frontend expects at runtime.
           gsettings-desktop-schemas
           adwaita-icon-theme
