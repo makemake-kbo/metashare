@@ -126,7 +126,7 @@ public final class MonitorActivity extends Activity
             Log.e(TAG, "SurfaceViewRenderer.init failed", e);
         }
         if (session == null) {
-            session = new StreamSession(this, surfaceView, monitorIndex, this);
+            session = new StreamSession(this, surfaceView, eglBase, monitorIndex, this);
             session.start();
         }
     }

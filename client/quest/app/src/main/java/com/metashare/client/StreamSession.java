@@ -73,6 +73,7 @@ public final class StreamSession {
 
     private final Context context;
     private volatile SurfaceViewRenderer renderer;
+    private final EglBase eglBase;  // shared with SurfaceViewRenderer
     private final int monitorIndex;
     private final Listener listener;
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -84,12 +85,12 @@ public final class StreamSession {
 
     // libwebrtc state, created lazily once we actually need to negotiate.
     private PeerConnectionFactory factory;
-    private EglBase eglBase;
 
     public StreamSession(Context context, SurfaceViewRenderer renderer,
-                         int monitorIndex, Listener listener) {
+                         EglBase eglBase, int monitorIndex, Listener listener) {
         this.context = context;
         this.renderer = renderer;
+        this.eglBase = eglBase;
         this.monitorIndex = monitorIndex;
         this.listener = listener;
     }
@@ -248,7 +249,6 @@ public final class StreamSession {
         if (!"OK".equals(ok)) throw new IOException("expected OK, got: " + ok);
 
         ensureFactory();
-        eglBase = EglBase.create();
 
         // 2. PeerConnectionFactory is built lazily; the per-session PC uses it.
         PeerConnection.RTCConfiguration rtcConfig =
@@ -314,9 +314,11 @@ public final class StreamSession {
             throw new IOException("expected ANSWER, got: " + answerLine);
         String answerB64 = answerLine.substring("ANSWER ".length()).trim();
         byte[] answerSdp = Base64.getDecoder().decode(answerB64);
+        String answerStr = new String(answerSdp, StandardCharsets.UTF_8);
+        Log.i(TAG, "got ANSWER SDP (" + answerStr.length() + " chars):\n"
+                + answerStr);
         SessionDescription answer = new SessionDescription(
-                SessionDescription.Type.ANSWER,
-                new String(answerSdp, StandardCharsets.UTF_8));
+                SessionDescription.Type.ANSWER, answerStr);
 
         CountDownLatch setRemoteLatch = new CountDownLatch(1);
         pc.setRemoteDescription(new SdpObserver() {
@@ -375,7 +377,9 @@ public final class StreamSession {
             else if (s == PeerConnection.IceConnectionState.FAILED)
                 postStatus("ICE failed — reconnecting");
         }
-        @Override public void onConnectionChange(PeerConnection.PeerConnectionState s) {}
+        @Override public void onConnectionChange(PeerConnection.PeerConnectionState s) {
+            Log.i(TAG, "PC state: " + s);
+        }
         @Override public void onIceConnectionReceivingChange(boolean b) {}
         @Override public void onIceGatheringChange(PeerConnection.IceGatheringState s) {}
 

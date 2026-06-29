@@ -144,7 +144,7 @@ public final class MainActivity extends Activity
             Log.e(TAG, "SurfaceViewRenderer.init failed", e);
         }
         if (session == null) {
-            session = new StreamSession(this, surfaceView, 0, this);
+            session = new StreamSession(this, surfaceView, eglBase, 0, this);
             session.start();
         }
     }
