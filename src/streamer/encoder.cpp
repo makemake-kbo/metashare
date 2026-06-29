@@ -241,6 +241,16 @@ bool Encoder::encode(AVFrame* frame, std::int64_t pts_usec,
 
     enc_in->pts = pts_usec;
 
+    // Honor a pending keyframe request (PLI). AV_FRAME_FLAG_KEY asks the
+    // encoder for an IDR on this frame; setting pict_type covers encoders that
+    // only look at the picture type. The flag is cleared once consumed.
+    if (force_keyframe_.exchange(false)) {
+        enc_in->pict_type = AV_PICTURE_TYPE_I;
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 2, 100)
+        enc_in->flags |= AV_FRAME_FLAG_KEY;
+#endif
+    }
+
     // VAAPI path: upload the sw frame into a pooled hw surface. We allocate a
     // fresh AVFrame per call (cheap relative to encoding) so we don't have to
     // fight av_frame_unref clearing the hw_frames_ctx back-reference.

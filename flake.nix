@@ -20,7 +20,6 @@
           libdrm             # DMA-BUF frame import
           SDL2               # desktop test client window/render
           gtkmm4             # GTK4 control panel (client/gtk)
-          libdatachannel     # WebRTC (PeerConnection, RTP packetizers)
           # Schemas/icon theme the wrapped GTK4 frontend expects at runtime.
           gsettings-desktop-schemas
           adwaita-icon-theme
@@ -121,10 +120,6 @@
           type = "app";
           program = "${metashare}/bin/metashare-streamer";
         };
-        apps.testclient = {
-          type = "app";
-          program = "${metashare}/bin/metashare-testclient";
-        };
         apps.default = self.apps.${system}.ui;
 
         # `nix run .#flatpak-cli` / `.#flatpak-ui` — build distributable Flatpaks
@@ -149,7 +144,6 @@
           shellHook = ''
             echo "MetaShare dev shell — run: meson setup build && ninja -C build"
             echo "Streamer: ./build/src/streamer/metashare-streamer"
-            echo "Test client: ./build/client/desktop_test/metashare-testclient"
             echo "GTK4 control panel: ./build/client/gtk/metashare-streamer-ui"
             echo "Lint: scripts/lint.sh  (--fix to reformat)"
           '';

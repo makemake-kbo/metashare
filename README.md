@@ -44,9 +44,9 @@ ninja -C build
 
 ## Installing as an app (Nix)
 
-The flake exposes a `metashare` package (streamer + SDL2 test client + GTK4
-control panel and its GNOME `.desktop` entry). It tracks **nixpkgs
-nixos-unstable**, so point its `nixpkgs` input at an unstable channel.
+The flake exposes a `metashare` package (streamer + GTK4 control panel and its
+GNOME `.desktop` entry). It tracks **nixpkgs nixos-unstable**, so point its
+`nixpkgs` input at an unstable channel.
 
 ```nix
 {

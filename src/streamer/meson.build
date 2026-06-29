@@ -6,14 +6,6 @@ avcodec_dep = dependency('libavcodec')
 avutil_dep = dependency('libavutil')
 swscale_dep = dependency('libswscale')
 swresample_dep = dependency('libswresample')
-rtc_dep = dependency('libdatachannel', required : false)
-if not rtc_dep.found()
-  # libdatachannel ships only a CMake config, not pkg-config.
-  rtc_dep = dependency('LibDataChannel', method : 'cmake', required : false)
-endif
-if not rtc_dep.found()
-  error('libdatachannel not found — install it or set CMAKE_PREFIX_PATH')
-endif
 
 streamer_srcs = files(
   'main.cpp',
@@ -22,13 +14,14 @@ streamer_srcs = files(
   'audio_encoder.cpp',
   'encoder.cpp',
   'signaling_server.cpp',
-  'webrtc_server.cpp',
+  'rtp_packetizer.cpp',
+  'rtp_server.cpp',
   'discovery.cpp',
   '../common/signaling.cpp',
 )
 
 streamer_deps = [
-  threads_dep, avcodec_dep, avutil_dep, swscale_dep, swresample_dep, rtc_dep,
+  threads_dep, avcodec_dep, avutil_dep, swscale_dep, swresample_dep,
 ]
 
 streamer_args = []

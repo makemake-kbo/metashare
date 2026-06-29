@@ -397,8 +397,7 @@ int main(int argc, char** argv) {
     // We reassemble FUs into full NALs and feed each to the decoder as soon
     // as it's complete (start-code prefix + NAL bytes).
     {
-        rtc::Description::Video v("0",
-                                  rtc::Description::Direction::RecvOnly);
+        rtc::Description::Video v("0", rtc::Description::Direction::RecvOnly);
         v.addH265Codec(96);
         auto track = pc->addTrack(v);
         // No media handler — we want raw RTP packets.
@@ -464,8 +463,7 @@ int main(int argc, char** argv) {
     // RTP packet, so no depacketizer is needed — we parse the RTP header
     // inline to pull the payload.
     {
-        rtc::Description::Audio a("1",
-                                  rtc::Description::Direction::RecvOnly);
+        rtc::Description::Audio a("1", rtc::Description::Direction::RecvOnly);
         a.addOpusCodec(111);
         auto track = pc->addTrack(a);
         track->onMessage(

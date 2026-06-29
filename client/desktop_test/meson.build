@@ -1,3 +1,10 @@
+# The desktop test client still drives the legacy WebRTC/libdatachannel stack
+# (SDP offer/answer + ICE). The v4 migration switched the streamer to raw RTP,
+# so this client is dormant pending a raw-RTP rewrite. It is intentionally kept
+# out of the build to avoid pulling libdatachannel back in.
+message('Desktop test client: disabled (pending raw-RTP rewrite)')
+subdir_done()
+
 sdl2_dep = dependency('sdl2', required : false)
 if not sdl2_dep.found()
   sdl2_dep = dependency('SDL2', required : false)

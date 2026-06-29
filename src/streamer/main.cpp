@@ -1,7 +1,7 @@
 // MetaShare streamer CLI.
 //
 // Pipeline (per monitor):
-//   FrameSource -> Encoder (HEVC HW, H.264 SW fallback) -> WebRtcServer (UDP)
+//   FrameSource -> Encoder (HEVC HW, H.264 SW fallback) -> RtpServer (UDP)
 // Multiple monitors run as parallel pipelines, each on its own signaling port
 // (base, base+1, …) and its own capture thread.
 // DiscoveryResponder (UDP) lets clients find us with no config.
@@ -26,8 +26,8 @@ extern "C" {
 #include "discovery.hpp"
 #include "encoder.hpp"
 #include "frame_source.hpp"
+#include "rtp_server.hpp"
 #include "signaling.hpp"
-#include "webrtc_server.hpp"
 
 #ifdef METASHARE_HAVE_PORTAL
 #include "portal_pipewire_source.hpp"
@@ -80,9 +80,8 @@ struct Options {
     int audio_bitrate_kbps = 96;
 };
 
-// Wire-level channel ids (kept as bare constants since the new WebRTC
-// transport no longer ships them in a shared header — they only select
-// which RTP audio track broadcast_audio() targets).
+// Wire-level channel ids (kept as bare constants; they only select which audio
+// capture pipeline feeds the single audio SSRC on the raw-RTP transport).
 constexpr std::uint32_t kChannelAudioSystem = 1;
 constexpr std::uint32_t kChannelAudioMic = 2;
 
@@ -214,7 +213,7 @@ struct Pipeline {
     int index = 0;
     std::unique_ptr<FrameSource> source;
     std::unique_ptr<Encoder> encoder;
-    std::unique_ptr<WebRtcServer> server;
+    std::unique_ptr<RtpServer> server;
     std::thread thread;
     std::atomic<bool> running{false};
 };
@@ -430,10 +429,9 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "audio: %s\n", audio_err.c_str());
         return 2;
     }
-    bool want_sys = false, want_mic = false, want_test_tone = false;
+    bool want_sys = false, want_test_tone = false;
     for (std::uint32_t id : audio_channels) {
         if (id == kChannelAudioSystem) want_sys = true;
-        if (id == kChannelAudioMic) want_mic = true;
     }
     if (opt.audio.find("test") != std::string::npos) {
         want_test_tone = true;
@@ -493,9 +491,9 @@ int main(int argc, char** argv) {
                      p->encoder->codec_name(), is_h265 ? "HEVC" : "H.264",
                      p->encoder->using_hardware() ? " hw" : " sw");
 
-        // --- WebRTC server (signaling + media transport) ---
-        p->server = std::make_unique<WebRtcServer>();
-        WebRtcVideoFormat vfmt;
+        // --- RTP server (signaling + raw UDP media transport) ---
+        p->server = std::make_unique<RtpServer>();
+        VideoFormat vfmt;
         vfmt.width = fmt.width;
         vfmt.height = fmt.height;
         vfmt.fps_num = fmt.fps_num;
@@ -503,18 +501,11 @@ int main(int argc, char** argv) {
         vfmt.codec = is_h265 ? proto::Codec::kH265 : proto::Codec::kH264;
         p->server->set_video_format(vfmt);
 #if defined(METASHARE_HAVE_PORTAL) || defined(METASHARE_HAVE_MUTTER)
-        // Audio tracks live on monitor 0's PeerConnection only — clients
-        // connected to other monitors get video-only. (Audio is system-wide
-        // anyway; one feed per machine is enough.)
+        // Raw-RTP transport carries a single audio stream; it lives on
+        // monitor 0's server (audio is system-wide, so one feed per machine).
         if (i == 0) {
-            WebRtcAudioFormat afmt;
-            afmt.sample_rate = audio_fmt.sample_rate;
-            afmt.channels = audio_fmt.channels;
-            afmt.bitrate_kbps = opt.audio_bitrate_kbps;
-            p->server->set_audio_system_format(afmt);
-            p->server->set_audio_mic_format(afmt);
-            p->server->set_enable_audio_system(want_sys);
-            p->server->set_enable_audio_mic(want_mic);
+            p->server->set_audio_format(audio_fmt.sample_rate,
+                                        audio_fmt.channels);
         }
 #endif
         const std::uint16_t port = static_cast<std::uint16_t>(opt.port + i);
@@ -523,6 +514,11 @@ int main(int argc, char** argv) {
                          err.c_str());
             return 1;
         }
+        // Service client PLI / keyframe requests by forcing the encoder's next
+        // frame to be a keyframe.
+        p->server->on_keyframe_request = [enc = p->encoder.get()] {
+            if (enc) enc->force_keyframe();
+        };
         std::fprintf(stderr, "[monitor %d] signaling on tcp/%u\n", i,
                      static_cast<unsigned>(port));
 
@@ -593,8 +589,9 @@ int main(int argc, char** argv) {
     // monitor, so any client gets it regardless of which monitor port they
     // connected to).
     std::vector<std::unique_ptr<AudioChannel>> audio_pipelines;
-    if (want_sys || want_mic || want_test_tone) {
-        // Build the list of (channel_id, source) pairs.
+    if (want_sys || want_test_tone) {
+        // Build the list of (channel_id, source) pairs. The raw-RTP transport
+        // carries a single audio stream — only the system/test channel is fed.
         struct AudioSpec {
             std::uint32_t channel_id;
             PipeWireAudioSource::Mode mode;
@@ -609,9 +606,6 @@ int main(int argc, char** argv) {
                     specs.push_back(
                         {id, PipeWireAudioSource::Mode::kSystemSinkMonitor,
                          /*is_test=*/false});
-                else if (id == kChannelAudioMic)
-                    specs.push_back({id, PipeWireAudioSource::Mode::kMicrophone,
-                                     /*is_test=*/false});
             }
         }
 
@@ -648,11 +642,10 @@ int main(int argc, char** argv) {
             }
 
             ac->running = true;
-            // Fan audio out to every monitor's WebRtcServer. Only monitor 0's
-            // PeerConnection has audio tracks wired up, but passing the others
-            // is harmless — broadcast_audio() is a no-op on tracks that don't
-            // exist for that peer.
-            std::vector<WebRtcServer*> sinks;
+            // Fan audio out to every monitor's RtpServer. Only monitor 0's
+            // server has audio configured, but broadcast_audio() is a no-op
+            // for servers that never had a client READY on the audio stream.
+            std::vector<RtpServer*> sinks;
             sinks.reserve(pipelines.size());
             for (auto& p : pipelines) sinks.push_back(p->server.get());
             const std::uint32_t cid = spec.channel_id;
@@ -661,7 +654,7 @@ int main(int argc, char** argv) {
                 auto sink = [raw, sinks, cid](const std::uint8_t* data,
                                               std::size_t size,
                                               std::int64_t pts_usec) {
-                    for (WebRtcServer* s : sinks)
+                    for (RtpServer* s : sinks)
                         s->broadcast_audio(cid, data, size, pts_usec);
                 };
                 std::string thread_err;

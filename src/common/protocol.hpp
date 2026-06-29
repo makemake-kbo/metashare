@@ -3,9 +3,10 @@
 // Two channels:
 //   * Discovery  : UDP, default port 7777. Client broadcasts a probe, streamer
 //                  replies with an offer describing where to connect.
-//   * Signaling  : TCP, default port 7778. Used to exchange WebRTC SDP offers/
-//                  answers and ICE candidates; once negotiated, real media
-//                  flows over WebRTC (UDP/SRTP via libdatachannel).
+//                  (Transport-agnostic — unchanged across the raw-RTP switch.)
+//   * Signaling  : TCP, default port 7778. Exchanges stream params + UDP ports
+//                  (HELLO/READY/START/BYE, see src/common/signaling.hpp), then
+//                  raw H.265/Opus RTP flows over UDP.
 //
 // All multi-byte integers are little-endian on the wire. We target x86_64 hosts
 // and aarch64 (Quest) clients, both little-endian, so no byte swapping is done.
@@ -20,12 +21,13 @@ inline constexpr std::uint16_t kDiscoveryPort = 7777;
 
 // Bumped whenever the discovery structs below change incompatibly.
 //
-// v3 (webrtc): discovery structs are unchanged from v2, but the TCP stream
-//              protocol is GONE — port 7778 now carries signaling for WebRTC
-//              rather than the legacy binary frame stream. Clients must
-//              implement the new line-based signaling protocol
-//              (src/common/signaling.hpp) instead of the v2 frame header.
-inline constexpr std::uint32_t kProtocolVersion = 3;
+// v4 (raw-rtp): media transport switched from WebRTC/libdatachannel to raw
+//               H.265/Opus RTP over UDP. Discovery structs are binary-identical
+//               to v3 (the client_caps field is retained for size compat but
+//               ignored — codec negotiation now happens over TCP signaling).
+//               The TCP signaling protocol changed (HELLO/READY/START/BYE
+//               replace OFFER/ANSWER/ICE/OK), and there is no SDP/ICE.
+inline constexpr std::uint32_t kProtocolVersion = 4;
 
 // ---- Discovery (UDP) -------------------------------------------------------
 
@@ -36,7 +38,7 @@ inline constexpr char kDiscoveryMagic[8] = {'M', 'S', 'H', 'A',
 struct DiscoveryProbe {
     char magic[8];              // kDiscoveryMagic
     std::uint32_t version;      // kProtocolVersion
-    std::uint32_t client_caps;  // ClientCaps bitfield
+    std::uint32_t client_caps;  // reserved (was ClientCaps bitfield); ignored
 } __attribute__((packed));
 
 // Streamer's unicast reply back to the probing client.
@@ -49,14 +51,9 @@ struct DiscoveryOffer {
     char host_name[64];           // human-readable, NUL-terminated
 } __attribute__((packed));
 
-enum ClientCaps : std::uint32_t {
-    kCapH264 = 1u << 0,
-    kCapH265 = 1u << 1,
-};
-
-// Video codec enum — used by the encoder and the WebRTC server to negotiate
-// the right RTP packetizer. Kept here because the discovery probe carries
-// kCapH264/kCapH265 bits that map 1:1 to these values.
+// Video codec enum — selects the RTP packetizer / MediaCodec decoder.
+// Negotiation moved to the TCP handshake in v4; this enum is shared by the
+// encoder, the RTP server and the HELLO JSON "codec" field.
 enum class Codec : std::uint32_t {
     kH264 = 0,
     kH265 = 1,

@@ -1,37 +1,38 @@
-// MetaShare signaling protocol — TCP line-based, used to exchange WebRTC
-// SDP offers/answers and trickle ICE candidates between streamer and client
-// before the actual media flows over UDP/SRTP via libdatachannel.
+// MetaShare signaling protocol — TCP line-based, used to bootstrap a raw RTP
+// session (no SDP, no ICE). The streamer advertises its stream parameters, the
+// client replies with the UDP port it will listen on, and the streamer starts
+// pushing RTP. After that, signaling only carries the final BYE.
 //
-// Wire format: newline-terminated ASCII lines. The SDP/candidate bodies are
-// base64-encoded so the framing stays trivial (no JSON escaping of `\r\n`).
+// Wire format: newline-terminated ASCII lines. Bodies (HELLO/READY) are compact
+// JSON (no embedded newlines), so framing stays trivial and base64 is gone.
 //
-//   OFFER <b64-sdp>            client -> server: SDP offer
-//   ANSWER <b64-sdp>           server -> client: SDP answer
-//   ICE <b64-candidate> <mid>  bidirectional: trickle ICE candidate
-//                              (mid = sdpMid, an unsigned int)
-//   OK                         server -> client: signaling ready
-//   BYE                       either side: clean shutdown
+//   HELLO <json>   server -> client: stream params
+//                  (codec, resolution, fps, SSRCs, payload types, clock rates)
+//   READY <json>   client -> server: {"port": <client UDP port>}
+//   START                       server -> client: RTP streaming begins
+//   BYE                         either side: clean shutdown
 //
-// Discovery (UDP) still uses the legacy binary structs from protocol.hpp.
+// One UDP port carries both video and audio, demultiplexed by SSRC.
+//
+// Discovery (UDP) still uses the binary structs from protocol.hpp.
 
 #pragma once
 
 #include <cstdint>
-#include <functional>
 #include <string>
 
 namespace metashare::signal {
 
-// Reserved TCP port for the signaling server (was kStreamPort).
+// Reserved TCP port for the signaling server.
 inline constexpr std::uint16_t kDefaultSignalingPort = 7778;
 
 // One decoded signaling message.
-enum class Type { kOffer, kAnswer, kIce, kOk, kBye };
+enum class Type { kHello, kReady, kStart, kBye };
 
 struct Message {
     Type type;
-    std::string body;  // SDP (offer/answer) or candidate string (ice)
-    std::string mid;   // sdpMid (ice only); empty otherwise
+    // JSON body for HELLO/READY; empty for START/BYE.
+    std::string body;
 };
 
 // Serialize a Message to its wire line (without the trailing newline).

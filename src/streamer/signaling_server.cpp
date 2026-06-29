@@ -48,7 +48,8 @@ bool send_all(int fd, const void* data, std::size_t len) {
 
 Server::~Server() { stop(); }
 
-bool Server::start(std::uint16_t port, OnMessage on_message, std::string& err) {
+bool Server::start(std::uint16_t port, OnConnect on_connect,
+                   OnMessage on_message, std::string& err) {
     listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd_ < 0) {
         err = std::strerror(errno);
@@ -77,19 +78,25 @@ bool Server::start(std::uint16_t port, OnMessage on_message, std::string& err) {
     }
 
     running_ = true;
-    accept_thread_ =
-        std::thread([this, port, on_message = std::move(on_message)] {
-            while (running_) {
-                int fd = ::accept(listen_fd_, nullptr, nullptr);
-                if (fd < 0) {
-                    if (!running_) break;
-                    continue;
-                }
-                std::fprintf(stderr, "[signaling] client connected\n");
-                client_loop(fd, on_message);
-                std::fprintf(stderr, "[signaling] client disconnected\n");
+    accept_thread_ = std::thread([this, port,
+                                  on_connect = std::move(on_connect),
+                                  on_message = std::move(on_message)] {
+        while (running_) {
+            sockaddr_in peer{};
+            socklen_t plen = sizeof(peer);
+            int fd =
+                ::accept(listen_fd_, reinterpret_cast<sockaddr*>(&peer), &plen);
+            if (fd < 0) {
+                if (!running_) break;
+                continue;
             }
-        });
+            char ip[INET_ADDRSTRLEN] = {0};
+            ::inet_ntop(AF_INET, &peer.sin_addr, ip, sizeof(ip));
+            std::fprintf(stderr, "[signaling] client connected from %s\n", ip);
+            client_loop(fd, peer, on_connect, on_message);
+            std::fprintf(stderr, "[signaling] client disconnected\n");
+        }
+    });
     return true;
 }
 
@@ -118,14 +125,14 @@ bool Server::send(const Message& m) {
     return send_all(fd, line.data(), line.size());
 }
 
-void Server::client_loop(int fd, OnMessage on_message) {
+void Server::client_loop(int fd, const sockaddr_in& peer,
+                         const OnConnect& on_connect,
+                         const OnMessage& on_message) {
     client_fd_ = fd;
 
-    // Send a ready marker so the client knows it can start the offer.
-    {
-        std::string ok = "OK\n";
-        send_all(fd, ok.data(), ok.size());
-    }
+    // Notify the owner that a client is connected so it can send the initial
+    // HELLO. The new raw-RTP protocol has no "OK" marker — HELLO is first.
+    if (on_connect) on_connect(peer);
 
     std::string line;
     while (running_) {

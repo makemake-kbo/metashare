@@ -17,10 +17,11 @@ fix=0
 [[ "${1:-}" == "--fix" ]] && fix=1
 
 # All hand-written C++ sources. Build outputs and the vendored Android SDK are
-# excluded by only listing source directories.
+# excluded by only listing source directories. The desktop_test client is
+# omitted — it is dormant pending a raw-RTP rewrite and still references the
+# removed libdatachannel/SDP signaling, so it is neither built nor linted.
 mapfile -t cpp_files < <(find \
     src \
-    client/desktop_test \
     client/gtk \
     client/quest/app/src/main/cpp \
     -type f \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \) | sort)
@@ -45,7 +46,6 @@ fi
 
 mapfile -t tidy_files < <(find \
     src/streamer \
-    client/desktop_test \
     client/gtk \
     -type f -name '*.cpp' | sort)
 

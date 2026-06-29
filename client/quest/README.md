@@ -1,12 +1,12 @@
 # MetaShare — Quest client
 
 A standard Android 2D app for Quest/Horizon OS. It discovers the MetaShare
-streamer, decodes the H.264 stream with the Quest hardware decoder
-(`MediaCodec`), and renders into a `SurfaceView`.
+streamer, receives raw H.265/H.264 + Opus RTP over UDP, decodes video with the
+Quest hardware decoder (`MediaCodec`), and renders into a `SurfaceView`.
 
-This intentionally does **not** use OpenXR. Quest launches it as a normal
-resizable app window, which matches the system-window approach used by remote
-desktop style apps.
+This intentionally does **not** use OpenXR or libwebrtc. Quest launches it as a
+normal resizable app window, which matches the system-window approach used by
+remote-desktop-style apps.
 
 ## Prerequisites
 
@@ -43,16 +43,20 @@ For desktop capture:
 ## Architecture
 
 ```text
-MainActivity
-    SurfaceView
-        MediaCodec("video/avc") renders decoded frames directly to the Surface
+MainActivity / MonitorActivity
+    SurfaceView (plain android.view.SurfaceView — no EGL)
+        VideoDecoder: MediaCodec("video/hevc"|"video/avc") -> Surface (async)
 
-Background stream thread
-    UDP broadcast discovery on 7777
-    TCP stream connect on 7778
-    StreamHeader + FrameHeader parsing
-    encoded H.264 access units queued into MediaCodec input buffers
+StreamSession (background thread)
+    UDP broadcast discovery on 7777  (protocol v4)
+    TCP signaling on 7778            (HELLO stream params -> READY {port} -> START)
+    RtpReceiver on an ephemeral UDP port
+        demux by SSRC
+        video: jitter buffer + H.265/H.264 depacketizer -> VideoSink (Annex B)
+        audio: Opus payload -> AudioSink
+        reliability: NACK (sequence gaps) + PLI (request keyframe)
+    AudioDecoder: MediaCodec("audio/opus") -> AudioTrack
 ```
 
-The old OpenXR native client sources are still in `app/src/main/cpp` for
-reference, but Gradle no longer builds or packages them for the Quest APK.
+No third-party media dependency is required — everything uses the Android
+framework (`MediaCodec`, `AudioTrack`, `DatagramSocket`, `Surface`).

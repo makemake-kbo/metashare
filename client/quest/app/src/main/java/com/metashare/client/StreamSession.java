@@ -5,21 +5,10 @@ import android.net.wifi.WifiManager;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.view.Surface;
+import android.view.SurfaceView;
 
-import org.webrtc.DefaultVideoDecoderFactory;
-import org.webrtc.EglBase;
-import org.webrtc.IceCandidate;
-import org.webrtc.MediaConstraints;
-import org.webrtc.MediaStreamTrack;
-import org.webrtc.PeerConnection;
-import org.webrtc.PeerConnectionFactory;
-import org.webrtc.RtpReceiver;
-import org.webrtc.RtpTransceiver;
-import org.webrtc.SdpObserver;
-import org.webrtc.SessionDescription;
-import org.webrtc.SurfaceViewRenderer;
-import org.webrtc.VideoSink;
-import org.webrtc.audio.JavaAudioDeviceModule;
+import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -37,22 +26,25 @@ import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
-import java.util.Base64;
 import java.util.Collections;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 
 /**
- * Streams one monitor from a MetaShare streamer over WebRTC (libdatachannel on
- * the server, libwebrtc on this side). SDP/ICE exchange happens over a tiny TCP
- * signaling protocol — newline-delimited base64-encoded SDP/candidate blobs.
+ * Streams one monitor from a MetaShare streamer over raw RTP (H.265/H.264 video
+ * + Opus audio). A tiny TCP signaling protocol bootstraps the session:
  *
- * <p>Discovery (UDP) is unchanged from v1: broadcast probe, receive an offer
- * with the host's signaling port, connect, negotiate WebRTC, render.
+ * <pre>
+ *   server -> client: HELLO {json stream params}
+ *   client -> server: READY {"port": <client udp port>}
+ *   server -> client: START
+ *   ... raw RTP over UDP ...
+ *   either        : BYE
+ * </pre>
  *
- * <p>Video decoding (HEVC on Quest 3) is handled by libwebrtc's
- * {@link HardwareVideoDecoderFactory}, rendered into the supplied
- * {@link SurfaceViewRenderer} (which is also a {@link VideoSink}).
+ * <p>Discovery (UDP broadcast) is unchanged: probe, receive an offer with the
+ * host's signaling port, connect, then render.
+ *
+ * <p>Video decoding is native MediaCodec (hardware H.265 on Quest 3) rendering
+ * straight to the supplied {@link SurfaceView}'s Surface — no libwebrtc, no EGL.
  */
 public final class StreamSession {
 
@@ -61,9 +53,7 @@ public final class StreamSession {
     private static final byte[] DISCOVERY_MAGIC =
             new byte[] {'M', 'S', 'H', 'A', 'R', 'E', 'D', '1'};
     private static final int DISCOVERY_PORT = 7777;
-    private static final int PROTOCOL_VERSION = 3;
-    private static final int CAP_H264 = 1 << 0;
-    private static final int CAP_H265 = 1 << 1;
+    private static final int PROTOCOL_VERSION = 4;
 
     /** Callbacks delivered on the main thread. */
     public interface Listener {
@@ -72,8 +62,7 @@ public final class StreamSession {
     }
 
     private final Context context;
-    private volatile SurfaceViewRenderer renderer;
-    private final EglBase eglBase;  // shared with SurfaceViewRenderer
+    private volatile SurfaceView surfaceView;
     private final int monitorIndex;
     private final Listener listener;
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -83,21 +72,17 @@ public final class StreamSession {
     private DatagramSocket discoverySocket;
     private Socket signalingSocket;
 
-    // libwebrtc state, created lazily once we actually need to negotiate.
-    private PeerConnectionFactory factory;
-
-    public StreamSession(Context context, SurfaceViewRenderer renderer,
-                         EglBase eglBase, int monitorIndex, Listener listener) {
+    public StreamSession(Context context, SurfaceView surfaceView,
+                         int monitorIndex, Listener listener) {
         this.context = context;
-        this.renderer = renderer;
-        this.eglBase = eglBase;
+        this.surfaceView = surfaceView;
         this.monitorIndex = monitorIndex;
         this.listener = listener;
     }
 
     /** Swap the render target after a surface recreation. */
-    public void setRenderer(SurfaceViewRenderer renderer) {
-        this.renderer = renderer;
+    public void setRenderer(SurfaceView surfaceView) {
+        this.surfaceView = surfaceView;
     }
 
     public synchronized void start() {
@@ -171,7 +156,7 @@ public final class StreamSession {
                     .order(ByteOrder.LITTLE_ENDIAN)
                     .put(DISCOVERY_MAGIC)
                     .putInt(PROTOCOL_VERSION)
-                    .putInt(CAP_H264 | CAP_H265)
+                    .putInt(0)  // reserved client_caps (v4 ignores codec bits)
                     .array();
 
             sendProbe(socket, probe, InetAddress.getByName("255.255.255.255"));
@@ -228,13 +213,12 @@ public final class StreamSession {
         }
     }
 
-    // ----------------------------------------------------- WebRTC negotiation
+    // --------------------------------------------------------- RTP negotiation
 
     private void negotiateAndRender(InetSocketAddress offer) throws Exception {
         int targetPort = offer.getPort() + monitorIndex;
         Log.i(TAG, "monitor " + monitorIndex + " -> signaling port " + targetPort);
 
-        // 1. Connect the signaling TCP channel and wait for OK.
         Socket socket = new Socket();
         signalingSocket = socket;
         socket.setTcpNoDelay(true);
@@ -245,208 +229,113 @@ public final class StreamSession {
                                       StandardCharsets.US_ASCII));
         OutputStream sigOut = socket.getOutputStream();
 
-        String ok = sigIn.readLine();
-        if (!"OK".equals(ok)) throw new IOException("expected OK, got: " + ok);
+        // 1. Read HELLO with stream params.
+        String helloLine = sigIn.readLine();
+        if (helloLine == null || !helloLine.startsWith("HELLO "))
+            throw new IOException("expected HELLO, got: " + helloLine);
+        JSONObject hello = new JSONObject(helloLine.substring("HELLO ".length()));
+        JSONObject video = hello.getJSONObject("video");
+        final String vCodec = video.getString("codec");
+        final int vWidth = video.getInt("width");
+        final int vHeight = video.getInt("height");
+        final int vSsrc = video.getInt("ssrc");
+        final int vPt = video.getInt("pt");
+        final int vClock = video.optInt("clock", 90000);
 
-        ensureFactory();
+        final int aSsrc;
+        final int aPt;
+        final int aClock;
+        final int aRate;
+        final int aChannels;
+        boolean haveAudio = hello.has("audio");
+        if (haveAudio) {
+            JSONObject audio = hello.getJSONObject("audio");
+            aSsrc = audio.getInt("ssrc");
+            aPt = audio.getInt("pt");
+            aClock = audio.optInt("clock", 48000);
+            aRate = audio.optInt("rate", 48000);
+            aChannels = audio.optInt("channels", 2);
+        } else {
+            aSsrc = -1; aPt = -1; aClock = 48000; aRate = 48000; aChannels = 2;
+        }
 
-        // 2. PeerConnectionFactory is built lazily; the per-session PC uses it.
-        PeerConnection.RTCConfiguration rtcConfig =
-                new PeerConnection.RTCConfiguration(Collections.emptyList());
-        rtcConfig.iceTransportsType =
-                PeerConnection.IceTransportsType.ALL;
-        rtcConfig.continualGatheringPolicy =
-                PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY;
-        rtcConfig.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN;
-
-        PeerConnection pc = factory.createPeerConnection(rtcConfig, pcObserver);
-        if (pc == null) throw new IOException("createPeerConnection failed");
-
-        // 3. Add RECVONLY transceivers — video (HEVC preferred) + audio (Opus).
-        //    Using RTPTransceiverInit lets us force RECVONLY direction.
-        RtpTransceiver.RtpTransceiverInit recvOnly =
-                new RtpTransceiver.RtpTransceiverInit(
-                        RtpTransceiver.RtpTransceiverDirection.RECV_ONLY);
-        pc.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO,
-                          recvOnly);
-        pc.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO,
-                          recvOnly);
-
-        // 4. Create an SDP offer, send it via signaling.
-        SessionDescription[] offerHolder = new SessionDescription[1];
-        CountDownLatch offerLatch = new CountDownLatch(1);
-        pc.createOffer(new SdpObserver() {
-            @Override public void onCreateSuccess(SessionDescription sdp) {
-                offerHolder[0] = sdp; offerLatch.countDown();
+        // 2. Set up decoders.
+        final SurfaceView sv = surfaceView;
+        final VideoDecoder videoDecoder = new VideoDecoder();
+        VideoDecoder.Listener vListener = new VideoDecoder.Listener() {
+            @Override public void onFirstFrameRendered() {
+                postStatus("");  // hide the status overlay
             }
-            @Override public void onSetSuccess() {}
-            @Override public void onCreateFailure(String s) {
-                Log.e(TAG, "createOffer failed: " + s); offerLatch.countDown();
+            @Override public void onFrameResolutionChanged(int w, int h) {
+                postSize(w, h);
             }
-            @Override public void onSetFailure(String s) {}
-        }, new MediaConstraints());
-
-        if (!offerLatch.await(5, TimeUnit.SECONDS) || offerHolder[0] == null)
-            throw new IOException("createOffer timeout");
-
-        // Set the local description; libwebrtc fires the local sdp via observer.
-        CountDownLatch setLocalLatch = new CountDownLatch(1);
-        pc.setLocalDescription(new SdpObserver() {
-            @Override public void onCreateSuccess(SessionDescription sdp) {}
-            @Override public void onSetSuccess() { setLocalLatch.countDown(); }
-            @Override public void onCreateFailure(String s) {}
-            @Override public void onSetFailure(String s) {
-                Log.e(TAG, "setLocalDescription failed: " + s);
-                setLocalLatch.countDown();
+        };
+        Surface surface = (sv != null) ? sv.getHolder().getSurface() : null;
+        if (surface != null && surface.isValid()) {
+            try {
+                videoDecoder.init(surface, vCodec, vWidth, vHeight, vListener);
+            } catch (Exception e) {
+                Log.e(TAG, "video decoder init failed: " + e.getMessage());
+                throw e;
             }
-        }, offerHolder[0]);
+        } else {
+            Log.w(TAG, "surface not ready — video disabled for this session");
+        }
 
-        if (!setLocalLatch.await(5, TimeUnit.SECONDS))
-            throw new IOException("setLocalDescription timeout");
-
-        // Send OFFER + any ICE candidates collected so far.
-        sendLine(sigOut, "OFFER " + Base64.getEncoder().encodeToString(
-                offerHolder[0].description.getBytes(StandardCharsets.UTF_8)));
-
-        // 5. Wait for the streamer's answer and apply it.
-        String answerLine = sigIn.readLine();
-        if (answerLine == null || !answerLine.startsWith("ANSWER "))
-            throw new IOException("expected ANSWER, got: " + answerLine);
-        String answerB64 = answerLine.substring("ANSWER ".length()).trim();
-        byte[] answerSdp = Base64.getDecoder().decode(answerB64);
-        String answerStr = new String(answerSdp, StandardCharsets.UTF_8);
-        Log.i(TAG, "got ANSWER SDP (" + answerStr.length() + " chars):\n"
-                + answerStr);
-        SessionDescription answer = new SessionDescription(
-                SessionDescription.Type.ANSWER, answerStr);
-
-        CountDownLatch setRemoteLatch = new CountDownLatch(1);
-        pc.setRemoteDescription(new SdpObserver() {
-            @Override public void onCreateSuccess(SessionDescription sdp) {}
-            @Override public void onSetSuccess() { setRemoteLatch.countDown(); }
-            @Override public void onCreateFailure(String s) {}
-            @Override public void onSetFailure(String s) {
-                Log.e(TAG, "setRemoteDescription failed: " + s);
-                setRemoteLatch.countDown();
+        final AudioDecoder audioDecoder;
+        if (haveAudio) {
+            AudioDecoder ad = new AudioDecoder();
+            boolean audioOk = false;
+            try {
+                ad.init(aRate, aChannels);
+                audioOk = true;
+            } catch (Exception e) {
+                Log.w(TAG, "audio decoder init failed (audio disabled): "
+                        + e.getMessage());
+                ad = null;
             }
-        }, answer);
-        if (!setRemoteLatch.await(10, TimeUnit.SECONDS))
-            throw new IOException("setRemoteDescription timeout");
+            audioDecoder = audioOk ? ad : null;
+        } else {
+            audioDecoder = null;
+        }
+
+        // 3. Bring up the RTP receiver on an ephemeral port.
+        final RtpReceiver rtp = new RtpReceiver(
+                (annexB, ptsUsec, keyframe) -> videoDecoder.feed(annexB, ptsUsec, keyframe),
+                (haveAudio && audioDecoder != null)
+                        ? (data, off, len, ptsUsec) -> audioDecoder.feed(data, off, len, ptsUsec)
+                        : null);
+        rtp.configure(vSsrc, vPt, vCodec, vClock, aSsrc, aPt, aClock);
+        rtp.start(0);
+        int udpPort = rtp.getLocalPort();
+        Log.i(TAG, "RTP receiver on udp/" + udpPort);
+
+        // 4. Tell the streamer where to send media, then wait for START.
+        sendLine(sigOut, "READY {\"port\":" + udpPort + "}");
+        String startLine = sigIn.readLine();
+        if (startLine == null || !startLine.equals("START"))
+            throw new IOException("expected START, got: " + startLine);
 
         postStatus("Streaming");
 
-        // 6. Pump signaling messages until the connection ends. Local ICE
-        //    candidates are forwarded as ICE lines; remote ones are added to PC.
-        //    libwebrtc fires onAddStream/onAddTrack when the video track is up;
-        //    the renderer is wired up there.
-        boolean gotFirstFrame = false;
-        while (running) {
-            String line = sigIn.readLine();
-            if (line == null) break;
+        // Ask for an immediate keyframe so decode starts without waiting up to
+        // the encoder's full keyframe interval for the first IDR.
+        rtp.requestKeyframe();
 
-            if (line.startsWith("ICE ")) {
-                String[] parts = line.substring(4).split(" ", 2);
-                if (parts.length != 2) continue;
-                byte[] candBytes;
-                try {
-                    candBytes = Base64.getDecoder().decode(parts[0]);
-                } catch (IllegalArgumentException ignored) {
-                    continue;
-                }
-                String candidateStr =
-                        new String(candBytes, StandardCharsets.UTF_8);
-                String sdpMid = parts[1];
-                IceCandidate cand = new IceCandidate(
-                        sdpMid, 0, candidateStr);
-                try { pc.addIceCandidate(cand); }
-                catch (Exception e) { Log.w(TAG, "bad ICE: " + e.getMessage()); }
-            } else if (line.equals("BYE")) {
-                break;
+        // 5. Block until BYE / disconnect. Media flows on the RTP thread.
+        try {
+            while (running) {
+                String line = sigIn.readLine();
+                if (line == null) break;
+                if (line.equals("BYE")) break;
+            }
+        } finally {
+            try { rtp.stop(); } catch (Exception ignored) {}
+            try { videoDecoder.release(); } catch (Exception ignored) {}
+            if (audioDecoder != null) {
+                try { audioDecoder.release(); } catch (Exception ignored) {}
             }
         }
-
-        try { pc.dispose(); } catch (Exception ignored) {}
-    }
-
-    private final PeerConnection.Observer pcObserver = new PeerConnection.Observer() {
-        @Override public void onSignalingChange(PeerConnection.SignalingState s) {}
-        @Override public void onIceConnectionChange(PeerConnection.IceConnectionState s) {
-            Log.i(TAG, "ICE state: " + s);
-            if (s == PeerConnection.IceConnectionState.CONNECTED)
-                postStatus("Streaming");
-            else if (s == PeerConnection.IceConnectionState.FAILED)
-                postStatus("ICE failed — reconnecting");
-        }
-        @Override public void onConnectionChange(PeerConnection.PeerConnectionState s) {
-            Log.i(TAG, "PC state: " + s);
-        }
-        @Override public void onIceConnectionReceivingChange(boolean b) {}
-        @Override public void onIceGatheringChange(PeerConnection.IceGatheringState s) {}
-
-        @Override public void onIceCandidate(IceCandidate candidate) {
-            // Send our local candidate to the streamer via signaling.
-            try {
-                String b64 = Base64.getEncoder().encodeToString(
-                        candidate.sdp.getBytes(StandardCharsets.UTF_8));
-                sendLine(signalingSocket.getOutputStream(),
-                         "ICE " + b64 + " " + candidate.sdpMid);
-            } catch (IOException e) {
-                Log.w(TAG, "failed to send ICE: " + e.getMessage());
-            }
-        }
-
-        @Override public void onIceCandidatesRemoved(IceCandidate[] c) {}
-        @Override public void onAddStream(org.webrtc.MediaStream s) {}
-        @Override public void onRemoveStream(org.webrtc.MediaStream s) {}
-        @Override public void onDataChannel(org.webrtc.DataChannel d) {}
-        @Override public void onRenegotiationNeeded() {}
-
-        @Override public void onAddTrack(RtpReceiver receiver,
-                                         org.webrtc.MediaStream[] mediaStreams) {
-            // Unified Plan: each RECVONLY transceiver fires onAddTrack when
-            // its remote track is up. We wire the video track to the renderer.
-            MediaStreamTrack track = receiver.track();
-            Log.i(TAG, "onAddTrack: " + track.kind()
-                    + " id=" + track.id());
-            if (track instanceof org.webrtc.VideoTrack) {
-                org.webrtc.VideoTrack vt = (org.webrtc.VideoTrack) track;
-                if (vt != null) {
-                    vt.setEnabled(true);
-                    final SurfaceViewRenderer r = renderer;
-                    if (r != null) {
-                        main.post(() -> {
-                            try { vt.addSink(r); }
-                            catch (Exception e) {
-                                Log.w(TAG, "addSink failed: " + e.getMessage());
-                            }
-                        });
-                    }
-                }
-            }
-        }
-    };
-
-    private synchronized void ensureFactory() {
-        if (factory != null) return;
-
-        PeerConnectionFactory.initialize(
-                PeerConnectionFactory.InitializationOptions.builder(context)
-                        .createInitializationOptions());
-
-        JavaAudioDeviceModule audio = JavaAudioDeviceModule.builder(context)
-                .createAudioDeviceModule();
-
-        // DefaultVideoDecoderFactory wraps HardwareVideoDecoderFactory with a
-        // SoftwareVideoDecoderFactory fallback. On Quest 3 the HW factory
-        // picks up HEVC via MediaCodec.
-        DefaultVideoDecoderFactory decoders = new DefaultVideoDecoderFactory(
-                eglBase != null ? eglBase.getEglBaseContext() : null);
-
-        factory = PeerConnectionFactory.builder()
-                .setAudioDeviceModule(audio)
-                .setVideoDecoderFactory(decoders)
-                .createPeerConnectionFactory();
-        Log.i(TAG, "PeerConnectionFactory ready");
     }
 
     // --------------------------------------------------------------- helpers
@@ -458,6 +347,10 @@ public final class StreamSession {
 
     private void postStatus(String text) {
         main.post(() -> listener.onStatus(text));
+    }
+
+    private void postSize(int w, int h) {
+        main.post(() -> listener.onStreamSize(w, h));
     }
 
     private static boolean startsWith(byte[] data, byte[] magic) {

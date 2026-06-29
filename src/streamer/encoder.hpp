@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -65,6 +66,10 @@ class Encoder {
     // Flush buffered packets at shutdown.
     void flush(const PacketSink& sink);
 
+    // Request that the next encoded frame be a keyframe (honored on the next
+    // encode() call). Used to service a client PLI / keyframe request.
+    void force_keyframe() { force_keyframe_.store(true); }
+
     // What we actually opened. codec() feeds the StreamHeader on the wire.
     proto::Codec codec() const { return chosen_codec_; }
     const char* codec_name() const { return chosen_name_; }
@@ -86,6 +91,7 @@ class Encoder {
     proto::Codec chosen_codec_ = proto::Codec::kH264;
     const char* chosen_name_ = "(none)";
     bool chosen_hardware_ = false;
+    std::atomic<bool> force_keyframe_{false};
 };
 
 }  // namespace metashare
