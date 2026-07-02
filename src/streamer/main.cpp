@@ -26,8 +26,11 @@ extern "C" {
 #include "discovery.hpp"
 #include "encoder.hpp"
 #include "frame_source.hpp"
+#include "pacer.hpp"
 #include "rtp_server.hpp"
 #include "signaling.hpp"
+
+#include <mutex>
 
 #ifdef METASHARE_HAVE_PORTAL
 #include "portal_pipewire_source.hpp"
@@ -65,7 +68,9 @@ struct Options {
     int width = 1920;
     int height = 1080;
     int fps = 60;
-    int bitrate_kbps = 15000;
+    // Ceiling for the loss-based bitrate controller. 8 Mbps is comfortable
+    // for 1080p60 HEVC and leaves WiFi headroom for multiple monitors.
+    int bitrate_kbps = 8000;
     std::string codec = "hevc";
     bool hardware = true;
     std::uint16_t port = signal::kDefaultSignalingPort;
@@ -113,7 +118,9 @@ void usage(const char* argv0) {
         "  --width <px>            virtual-monitor width (default 1920)\n"
         "  --height <px>           virtual-monitor height (default 1080)\n"
         "  --fps <n>              frame rate (default 60)\n"
-        "  --bitrate <kbps>       encoder bitrate (default 15000)\n"
+        "  --bitrate <kbps>       max encoder bitrate; adapts down under "
+        "loss\n"
+        "                         (default 8000)\n"
         "  --codec <hevc|h264>    preferred codec (default hevc)\n"
         "  --no-hw                skip VAAPI/NVENC; force software encoding\n"
         "  --port <n>             signaling TCP base port (monitor i -> "
@@ -216,7 +223,23 @@ struct Pipeline {
     std::unique_ptr<RtpServer> server;
     std::thread thread;
     std::atomic<bool> running{false};
+
+    // Loss-based bitrate adaptation, driven by the client's RTCP receiver
+    // reports (runs on the server's RTCP thread).
+    std::mutex abr_mu;
+    int abr_kbps = 0;  // current encoder target
+    std::chrono::steady_clock::time_point abr_last_down{};
+    std::chrono::steady_clock::time_point abr_clean_since{};
 };
+
+// Bitrate adaptation bounds/steps. On loss we cut hard (multiplicative
+// decrease), on a sustained clean link we creep back up toward the configured
+// maximum — classic AIMD, tuned slow so it never fights the jitter buffer.
+constexpr int kAbrMinKbps = 2000;
+constexpr float kAbrCutFactor = 0.6f;
+constexpr float kAbrGrowFactor = 1.08f;
+constexpr auto kAbrDownCooldown = std::chrono::seconds(2);
+constexpr auto kAbrGrowAfterClean = std::chrono::seconds(4);
 
 #if defined(METASHARE_HAVE_PORTAL) || defined(METASHARE_HAVE_MUTTER)
 // One capture→encode pipeline per audio channel. Encoded packets are fanned
@@ -416,6 +439,10 @@ int main(int argc, char** argv) {
     }
 #endif
 
+    // Host-wide send pacer shared by every pipeline (declared before the
+    // pipelines so it outlives their server threads).
+    Pacer pacer;
+
     std::vector<std::unique_ptr<Pipeline>> pipelines;
 
 #if defined(METASHARE_HAVE_PORTAL) || defined(METASHARE_HAVE_MUTTER)
@@ -518,6 +545,49 @@ int main(int argc, char** argv) {
         // frame to be a keyframe.
         p->server->on_keyframe_request = [enc = p->encoder.get()] {
             if (enc) enc->force_keyframe();
+        };
+
+        // Pace all video sends through the shared bucket, and adapt the
+        // encoder bitrate to the loss the client reports (RTCP RRs).
+        p->server->set_pacer(&pacer);
+        p->abr_kbps = opt.bitrate_kbps;
+        p->abr_last_down = std::chrono::steady_clock::now();
+        p->abr_clean_since = p->abr_last_down;
+        pacer.set_stream_rate(i, opt.bitrate_kbps);
+        p->server->on_loss_report = [raw = p.get(), &pacer,
+                                     max_kbps = opt.bitrate_kbps](float lost) {
+            const auto now = std::chrono::steady_clock::now();
+            std::lock_guard<std::mutex> lk(raw->abr_mu);
+            int next = raw->abr_kbps;
+            if (lost > 0.02f) {
+                raw->abr_clean_since = now;
+                if (now - raw->abr_last_down >= kAbrDownCooldown) {
+                    next =
+                        std::max(kAbrMinKbps, static_cast<int>(raw->abr_kbps *
+                                                               kAbrCutFactor));
+                    raw->abr_last_down = now;
+                }
+            } else if (lost < 0.005f) {
+                if (now - raw->abr_clean_since >= kAbrGrowAfterClean &&
+                    raw->abr_kbps < max_kbps) {
+                    next = std::min(max_kbps, static_cast<int>(raw->abr_kbps *
+                                                               kAbrGrowFactor));
+                    raw->abr_clean_since = now;
+                }
+            } else {
+                // Moderate loss: hold and reset the clean-link timer.
+                raw->abr_clean_since = now;
+            }
+            if (next != raw->abr_kbps) {
+                std::fprintf(stderr,
+                             "[monitor %d] bitrate %d -> %d kbps "
+                             "(loss %.1f%%)\n",
+                             raw->index, raw->abr_kbps, next,
+                             static_cast<double>(lost) * 100.0);
+                raw->abr_kbps = next;
+                raw->encoder->set_bitrate(next);
+                pacer.set_stream_rate(raw->index, next);
+            }
         };
         std::fprintf(stderr, "[monitor %d] signaling on tcp/%u\n", i,
                      static_cast<unsigned>(port));

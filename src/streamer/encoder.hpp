@@ -34,7 +34,7 @@ struct EncoderConfig {
     int height = 0;
     int fps_num = 60;
     int fps_den = 1;
-    int bitrate_kbps = 15000;
+    int bitrate_kbps = 8000;
     int keyint_seconds = 2;
     bool prefer_hardware = true;  // try VAAPI/NVENC before software
     // What the streamer would *like* to send. Hardware HEVC is attempted first;
@@ -70,6 +70,11 @@ class Encoder {
     // encode() call). Used to service a client PLI / keyframe request.
     void force_keyframe() { force_keyframe_.store(true); }
 
+    // Request a new target bitrate (thread-safe; applied at the next encode()
+    // by reopening the codec with the same candidate). Drives loss-based
+    // adaptation from the client's RTCP receiver reports.
+    void set_bitrate(int kbps) { pending_bitrate_kbps_.store(kbps); }
+
     // What we actually opened. codec() feeds the StreamHeader on the wire.
     proto::Codec codec() const { return chosen_codec_; }
     const char* codec_name() const { return chosen_name_; }
@@ -77,6 +82,8 @@ class Encoder {
 
   private:
     bool drain(const PacketSink& sink, std::string& err);
+    // Close and reopen the codec at a new bitrate (encode-thread only).
+    bool reconfigure_bitrate(int kbps, std::string& err);
 
     EncoderConfig cfg_{};
     const AVCodec* codec_ = nullptr;
@@ -92,6 +99,7 @@ class Encoder {
     const char* chosen_name_ = "(none)";
     bool chosen_hardware_ = false;
     std::atomic<bool> force_keyframe_{false};
+    std::atomic<int> pending_bitrate_kbps_{0};  // 0 = no change requested
 };
 
 }  // namespace metashare

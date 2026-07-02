@@ -130,6 +130,12 @@ void Server::client_loop(int fd, const sockaddr_in& peer,
                          const OnMessage& on_message) {
     client_fd_ = fd;
 
+    // The client keepalives every ~3 s (PING). If nothing arrives for 10 s the
+    // connection is dead; time out so the accept loop can serve a reconnect
+    // instead of blocking on a half-open socket forever.
+    timeval tv{10, 0};
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
     // Notify the owner that a client is connected so it can send the initial
     // HELLO. The new raw-RTP protocol has no "OK" marker — HELLO is first.
     if (on_connect) on_connect(peer);

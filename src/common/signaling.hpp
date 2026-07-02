@@ -26,8 +26,10 @@ namespace metashare::signal {
 // Reserved TCP port for the signaling server.
 inline constexpr std::uint16_t kDefaultSignalingPort = 7778;
 
-// One decoded signaling message.
-enum class Type { kHello, kReady, kStart, kBye };
+// One decoded signaling message. PING is a client->server keepalive so the
+// server can distinguish an idle-but-alive client from a vanished one (and
+// free the single per-monitor slot for reconnection).
+enum class Type { kHello, kReady, kStart, kBye, kPing };
 
 struct Message {
     Type type;

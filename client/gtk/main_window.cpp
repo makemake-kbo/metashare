@@ -231,7 +231,7 @@ void MainWindow::build_ui() {
         spin_bitrate_.set_range(kMinBitrate, kMaxBitrate);
         spin_bitrate_.set_increments(500, 5000);
         spin_bitrate_.set_numeric(true);
-        spin_bitrate_.set_value(15000);
+        spin_bitrate_.set_value(8000);
         spin_bitrate_.set_width_chars(7);
         auto* wrap =
             Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
@@ -240,7 +240,9 @@ void MainWindow::build_ui() {
         unit->add_css_class("dim-label");
         wrap->append(*unit);
         list->append(*make_row(
-            "Bitrate", "Target encoder bitrate. 15 000 ≈ 1080p60.", *wrap));
+            "Bitrate",
+            "Max encoder bitrate; adapts down under loss. 8 000 ≈ 1080p60.",
+            *wrap));
     }
 
     // --- Frame rate ---

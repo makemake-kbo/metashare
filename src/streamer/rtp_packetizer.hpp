@@ -17,6 +17,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstddef>
+#include <deque>
 #include <map>
 #include <mutex>
 #include <vector>
@@ -127,13 +128,16 @@ class RetransmitBuffer {
     // Record a sent packet (copy stored). seq is its RTP sequence number.
     void record(std::uint16_t seq, Packet packet);
 
-    // Look up a packet by sequence number. Returns nullptr if not retained.
-    const Packet* get(std::uint16_t seq) const;
+    // Copy a retained packet into out. Returns false if not retained. A copy
+    // (not a pointer) so concurrent record() eviction can't invalidate it.
+    bool get(std::uint16_t seq, Packet& out) const;
 
   private:
     mutable std::mutex mu_;
-    // Ordered by sequence number; oldest evicted once capacity is exceeded.
     std::map<std::uint16_t, Packet> packets_;
+    // Insertion order for eviction — evicting by lowest seq breaks at the
+    // 16-bit wrap (it would evict the *newest* packets).
+    std::deque<std::uint16_t> order_;
     std::size_t capacity_;
 };
 

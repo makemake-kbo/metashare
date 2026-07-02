@@ -209,8 +209,37 @@ void Encoder::close() {
     chosen_hardware_ = false;
 }
 
+bool Encoder::reconfigure_bitrate(int kbps, std::string& err) {
+    const proto::Codec prev_codec = chosen_codec_;
+    EncoderConfig cfg = cfg_;
+    cfg.bitrate_kbps = kbps;
+    close();
+    if (!open(cfg, err)) return false;
+    if (chosen_codec_ != prev_codec) {
+        // The same candidate opened moments ago at a different bitrate, so
+        // this should be unreachable — but a codec switch mid-stream would
+        // desync the client (HELLO advertised the old codec), so say so.
+        err = "reopen picked a different codec mid-stream";
+        return false;
+    }
+    // New codec instance starts with an IDR, but be explicit so the client
+    // can resume decoding immediately.
+    force_keyframe_.store(true);
+    return true;
+}
+
 bool Encoder::encode(AVFrame* frame, std::int64_t pts_usec,
                      const PacketSink& sink, std::string& err) {
+    // Apply a pending bitrate change at this frame boundary.
+    const int want_kbps = pending_bitrate_kbps_.exchange(0);
+    if (want_kbps > 0 && want_kbps != cfg_.bitrate_kbps) {
+        std::string rerr;
+        if (!reconfigure_bitrate(want_kbps, rerr)) {
+            err = "bitrate reconfigure failed: " + rerr;
+            return false;
+        }
+    }
+
     AVFrame* enc_in = frame;
 
     // Convert to the codec's input format unless the source already matches.

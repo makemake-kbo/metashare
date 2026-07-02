@@ -20,6 +20,7 @@
 
 #include <netinet/in.h>
 
+#include "pacer.hpp"
 #include "protocol.hpp"
 #include "rtp_packetizer.hpp"
 #include "signaling.hpp"
@@ -66,9 +67,17 @@ class RtpServer {
 
     int peer_count() const;
 
+    // Optional host-wide pacer; when set, video sends (including
+    // retransmissions) are throttled through it. Must outlive this server.
+    void set_pacer(Pacer* pacer) { pacer_ = pacer; }
+
     // Fired when a client sends a PLI / keyframe request. Wire this to
     // Encoder::force_keyframe() from the owning pipeline.
     std::function<void()> on_keyframe_request;
+
+    // Fired (from the RTCP thread, ~1/s) with the video fraction-lost from
+    // the client's Receiver Reports, 0.0..1.0. Drives bitrate adaptation.
+    std::function<void(float)> on_loss_report;
 
   private:
     void on_connect(const sockaddr_in& peer);
@@ -84,6 +93,7 @@ class RtpServer {
                             std::uint64_t octets, std::uint32_t last_rtp_ts);
 
     signal::Server signaling_;
+    Pacer* pacer_ = nullptr;
     VideoFormat video_{};
     int audio_rate_ = 48000;
     int audio_channels_ = 2;

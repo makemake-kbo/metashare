@@ -223,6 +223,9 @@ public final class StreamSession {
         signalingSocket = socket;
         socket.setTcpNoDelay(true);
         socket.connect(new InetSocketAddress(offer.getAddress(), targetPort), 3000);
+        // Don't hang forever if the server has our connection queued behind a
+        // dead one — a silent handshake is treated as a failure and retried.
+        socket.setSoTimeout(5000);
 
         BufferedReader sigIn = new BufferedReader(
                 new InputStreamReader(socket.getInputStream(),
@@ -323,9 +326,18 @@ public final class StreamSession {
         rtp.requestKeyframe();
 
         // 5. Block until BYE / disconnect. Media flows on the RTP thread.
+        // Keepalive: ping the streamer every read-timeout so it can tell a
+        // live-but-idle client from a vanished one (its recv times out at 10s).
+        socket.setSoTimeout(3000);
         try {
             while (running) {
-                String line = sigIn.readLine();
+                String line;
+                try {
+                    line = sigIn.readLine();
+                } catch (SocketTimeoutException idle) {
+                    sendLine(sigOut, "PING");  // throws when the link is dead
+                    continue;
+                }
                 if (line == null) break;
                 if (line.equals("BYE")) break;
             }

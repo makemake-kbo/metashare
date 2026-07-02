@@ -44,6 +44,10 @@ public final class RtpReceiver {
 
     private static final byte[] START_CODE = {0, 0, 0, 1};
     private static final int JITTER_MAX = 32;  // packets held for reordering
+    // Largest gap we try to repair with NACKs; anything bigger is hopeless
+    // (e.g. a long stall) and cheaper to fix with a single PLI + keyframe.
+    private static final int NACK_MAX_GAP = 256;
+    private static final long RR_INTERVAL_MS = 1000;  // receiver report cadence
 
     private final VideoSink videoSink;
     private final AudioSink audioSink;
@@ -65,6 +69,16 @@ public final class RtpReceiver {
     // Remote endpoint, learned from the first RTP packet (where NACKs/PLI go).
     private volatile InetAddress remoteAddress;
     private volatile int remotePort = -1;
+    // Keyframe request issued before the remote endpoint is known; serviced as
+    // soon as the first RTP packet reveals where to send the PLI.
+    private volatile boolean pliPending = false;
+
+    // Receiver-report statistics (video SSRC only; loop thread).
+    private long statFirstExtSeq = -1;   // extended seq of first packet
+    private long statReceived = 0;       // total video packets received
+    private long statExpectedPrior = 0;  // snapshot at last RR
+    private long statReceivedPrior = 0;
+    private long lastRrMs = 0;
 
     public RtpReceiver(VideoSink videoSink, AudioSink audioSink) {
         this.videoSink = videoSink;
@@ -116,6 +130,12 @@ public final class RtpReceiver {
 
     /** Send a PLI so the streamer emits a keyframe (e.g. right after START). */
     public void requestKeyframe() {
+        if (remoteAddress == null) {
+            // No RTP received yet, so we don't know the streamer's UDP source
+            // endpoint. Defer; the receive loop fires the PLI on first packet.
+            pliPending = true;
+            return;
+        }
         sendPli();
     }
 
@@ -123,10 +143,13 @@ public final class RtpReceiver {
 
     private void loop() {
         VideoDepacketizer depack = new VideoDepacketizer(videoCodec);
-        // Jitter buffer: seq -> held video packet, drained in seq order.
-        TreeMap<Integer, HeldVideo> jitter = new TreeMap<>();
-        int nextSeq = -1;        // next sequence number to deliver
-        long lastAutoPli = 0;    // throttle auto-PLI on big gaps
+        // Jitter buffer keyed by *extended* (unwrapped, monotonically growing)
+        // sequence number, so ordering survives the 16-bit wrap and stale
+        // retransmissions can be recognised and dropped.
+        TreeMap<Long, HeldVideo> jitter = new TreeMap<>();
+        long nextExtSeq = -1;     // next extended seq to deliver
+        long highestExtSeq = -1;  // highest extended seq received so far
+        long lastAutoPli = 0;     // throttle auto-PLI
         byte[] buf = new byte[65536];
         DatagramPacket pkt = new DatagramPacket(buf, buf.length);
 
@@ -136,6 +159,7 @@ public final class RtpReceiver {
                 socket.receive(pkt);
                 n = pkt.getLength();
             } catch (SocketTimeoutException ste) {
+                maybeSendReceiverReport(highestExtSeq);
                 continue;
             } catch (Exception e) {
                 if (!running) break;
@@ -147,6 +171,10 @@ public final class RtpReceiver {
             if (remoteAddress == null) {
                 remoteAddress = pkt.getAddress();
                 remotePort = pkt.getPort();
+                if (pliPending) {
+                    pliPending = false;
+                    sendPli();
+                }
             }
 
             byte[] data = pkt.getData();
@@ -175,27 +203,28 @@ public final class RtpReceiver {
             if (payloadLen <= 0) continue;
 
             if (ssrc == videoSsrc && pt == videoPt) {
-                // Buffer a copy of the payload for in-order delivery.
-                byte[] payload = new byte[payloadLen];
-                System.arraycopy(data, payloadOff, payload, 0, payloadLen);
-                jitter.put(seq, new HeldVideo(payload, payloadLen, marker, ts));
+                // Unwrap the 16-bit seq into the extended sequence space,
+                // interpreting it as the closest value to the highest seen
+                // (handles both reordering and wrap).
+                long ext;
+                if (highestExtSeq < 0) {
+                    ext = seq;
+                } else {
+                    ext = highestExtSeq
+                            + (short) (seq - (int) (highestExtSeq & 0xFFFF));
+                }
+                statReceived++;
 
-                // Drain in seq order. When the buffer overflows past a gap,
-                // advance and send NACKs for the truly-lost packets.
-                while (!jitter.isEmpty()) {
-                    Map.Entry<Integer, HeldVideo> e = jitter.firstEntry();
-                    int s = e.getKey();
-                    boolean due = (nextSeq < 0) || (s == nextSeq) ||
-                                  (jitter.size() > JITTER_MAX);
-                    if (!due) break;
-                    jitter.remove(s);
-
-                    if (nextSeq >= 0 && s != nextSeq) {
-                        // Gap overflowed the jitter window — these packets
-                        // are truly lost (not just reordered).
-                        int gap = (s - nextSeq) & 0xFFFF;
-                        sendNacksForGap(nextSeq, s);
-                        if (gap > JITTER_MAX) {
+                if (ext > highestExtSeq) {
+                    // New territory. NACK any gap *now*, while the missing
+                    // packets are still ahead of the playout point, so
+                    // retransmissions can actually be used.
+                    if (highestExtSeq >= 0 && ext > highestExtSeq + 1) {
+                        long gap = ext - highestExtSeq - 1;
+                        if (gap <= NACK_MAX_GAP) {
+                            sendNacksForRange(highestExtSeq + 1, ext);
+                        } else {
+                            // Hopelessly large gap — resync via keyframe.
                             long now = SystemClock.elapsedRealtime();
                             if (now - lastAutoPli > 500) {
                                 lastAutoPli = now;
@@ -203,10 +232,46 @@ public final class RtpReceiver {
                             }
                         }
                     }
+                    highestExtSeq = ext;
+                    if (statFirstExtSeq < 0) statFirstExtSeq = ext;
+                }
+
+                if (nextExtSeq >= 0 && ext < nextExtSeq) {
+                    // Behind the playout point (late retransmission or dup) —
+                    // useless now; feeding it forward would corrupt the
+                    // depacketizer and poison the jitter buffer. Drop it.
+                    maybeSendReceiverReport(highestExtSeq);
+                    continue;
+                }
+
+                if (!jitter.containsKey(ext)) {
+                    byte[] payload = new byte[payloadLen];
+                    System.arraycopy(data, payloadOff, payload, 0, payloadLen);
+                    jitter.put(ext, new HeldVideo(payload, payloadLen, marker, ts));
+                }
+
+                // Drain in extended-seq order. A gap only stalls delivery
+                // until the retransmission arrives or the window overflows.
+                while (!jitter.isEmpty()) {
+                    Map.Entry<Long, HeldVideo> e = jitter.firstEntry();
+                    long s = e.getKey();
+                    boolean due = (nextExtSeq < 0) || (s == nextExtSeq) ||
+                                  (jitter.size() > JITTER_MAX);
+                    if (!due) break;
+                    jitter.remove(s);
+
+                    if (nextExtSeq >= 0 && s != nextExtSeq) {
+                        // Retransmission didn't make it in time; the current
+                        // frame is damaged — ask for a keyframe (throttled).
+                        long now = SystemClock.elapsedRealtime();
+                        if (now - lastAutoPli > 500) {
+                            lastAutoPli = now;
+                            sendPli();
+                        }
+                    }
 
                     HeldVideo hv = e.getValue();
-                    if (nextSeq < 0) nextSeq = s;
-                    nextSeq = (s + 1) & 0xFFFF;
+                    nextExtSeq = s + 1;
                     long ptsUsec = hv.ts * 1_000_000L / videoClockRate;
                     depack.feed(hv.payload, 0, hv.len, hv.marker, ptsUsec,
                                 videoSink);
@@ -215,6 +280,8 @@ public final class RtpReceiver {
                 long ptsUsec = ts * 1_000_000L / audioClockRate;
                 audioSink.onOpusPacket(data, payloadOff, payloadLen, ptsUsec);
             }
+
+            maybeSendReceiverReport(highestExtSeq);
         }
     }
 
@@ -233,7 +300,8 @@ public final class RtpReceiver {
 
     // ------------------------------------------------------------------- NACK
 
-    private void sendNacksForGap(int firstMissing, int afterGap) {
+    /** NACK the extended-seq range [firstMissing, afterGap). */
+    private void sendNacksForRange(long firstMissing, long afterGap) {
         InetAddress addr = remoteAddress;
         int port = remotePort;
         if (addr == null || port < 0 || socket == null) return;
@@ -241,13 +309,13 @@ public final class RtpReceiver {
         // Pack missing seqs into NACK FCI entries using the Bitmap Loss Pattern
         // (BLP). Each entry covers PID + up to 16 following seqs, drastically
         // reducing the number of RTCP packets vs one-per-seq.
-        int pid = firstMissing;
-        while (pid != afterGap) {
+        long extPid = firstMissing;
+        while (extPid < afterGap) {
+            int pid = (int) (extPid & 0xFFFF);
             int blp = 0;
             int count = 0;
             for (int i = 0; i < 16; i++) {
-                int s = (pid + 1 + i) & 0xFFFF;
-                if (s == afterGap) break;
+                if (extPid + 1 + i >= afterGap) break;
                 blp |= (1 << i);
                 count++;
             }
@@ -269,7 +337,67 @@ public final class RtpReceiver {
             } catch (Exception e) {
                 break;
             }
-            pid = (pid + 1 + count) & 0xFFFF;
+            extPid += 1 + count;
+        }
+    }
+
+    // ------------------------------------------------------- receiver reports
+
+    /**
+     * Send an RTCP Receiver Report (RFC 3550) for the video stream roughly
+     * once per second. The streamer uses the fraction-lost field to adapt its
+     * encoder bitrate to what the WiFi link can actually carry.
+     */
+    private void maybeSendReceiverReport(long highestExtSeq) {
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastRrMs < RR_INTERVAL_MS) return;
+        lastRrMs = now;
+
+        InetAddress addr = remoteAddress;
+        int port = remotePort;
+        if (addr == null || port < 0 || socket == null) return;
+        if (statFirstExtSeq < 0 || highestExtSeq < 0) return;
+
+        long expected = highestExtSeq - statFirstExtSeq + 1;
+        long expectedInterval = expected - statExpectedPrior;
+        long receivedInterval = statReceived - statReceivedPrior;
+        statExpectedPrior = expected;
+        statReceivedPrior = statReceived;
+
+        int fractionLost = 0;
+        if (expectedInterval > 0) {
+            long lost = expectedInterval - receivedInterval;
+            if (lost > 0) {
+                fractionLost = (int) Math.min(255, lost * 256 / expectedInterval);
+            }
+        }
+        long cumLost = Math.max(0, Math.min(0x7FFFFF, expected - statReceived));
+
+        byte[] rr = new byte[32];
+        rr[0] = (byte) 0x81;  // V=2, P=0, RC=1
+        rr[1] = (byte) 201;   // PT=RR
+        rr[2] = 0x00;         // length = 7 words (32 bytes)
+        rr[3] = 0x07;
+        // bytes 4..7: reporter SSRC = 0 (server keys on the block's SSRC)
+        // Report block:
+        rr[8] = (byte) (videoSsrc >>> 24);
+        rr[9] = (byte) (videoSsrc >>> 16);
+        rr[10] = (byte) (videoSsrc >>> 8);
+        rr[11] = (byte) videoSsrc;
+        rr[12] = (byte) fractionLost;
+        rr[13] = (byte) (cumLost >>> 16);
+        rr[14] = (byte) (cumLost >>> 8);
+        rr[15] = (byte) cumLost;
+        int extHigh = (int) highestExtSeq;  // cycles<<16 | seq
+        rr[16] = (byte) (extHigh >>> 24);
+        rr[17] = (byte) (extHigh >>> 16);
+        rr[18] = (byte) (extHigh >>> 8);
+        rr[19] = (byte) extHigh;
+        // bytes 20..23 interarrival jitter, 24..27 LSR, 28..31 DLSR: zero.
+        try {
+            socket.send(new DatagramPacket(rr, rr.length, addr, port));
+        } catch (Exception e) {
+            Log.w(TAG, "RR send failed: " + e.getMessage());
         }
     }
 

@@ -212,19 +212,15 @@ void RtpServer::broadcast_video(const std::uint8_t* data, std::size_t size,
 
     std::vector<rtp::Packet> packets;
     video_packer_->packetize(data, size, pts_usec, packets);
-    for (std::size_t i = 0; i < packets.size(); ++i) {
-        const auto& pkt = packets[i];
+    for (const auto& pkt : packets) {
         video_retx_.record(rtp::seq_of(pkt), pkt);
         video_pkts_.fetch_add(1, std::memory_order_relaxed);
         video_octets_.fetch_add(pkt.size(), std::memory_order_relaxed);
+        // The shared pacer smooths keyframe bursts across *all* pipelines so
+        // the aggregate stays under what the WiFi link can absorb.
+        if (pacer_) pacer_->consume(pkt.size());
         ::sendto(udp_fd_, pkt.data(), pkt.size(), 0,
                  reinterpret_cast<sockaddr*>(&dst), sizeof(dst));
-        // Pace large bursts (4K keyframes produce 100+ packets) to reduce
-        // WiFi TX-queue overflow and reordering.
-        if (packets.size() > 16 && (i + 1) % 16 == 0 &&
-            i + 1 < packets.size()) {
-            ::usleep(500);
-        }
     }
     if (!packets.empty()) {
         video_last_ts_.store(
@@ -349,9 +345,10 @@ void RtpServer::handle_rtcp(const std::uint8_t* data, std::size_t size,
             std::uint16_t pid = (data[off] << 8) | data[off + 1];
             std::uint16_t blp = (data[off + 2] << 8) | data[off + 3];
             auto retransmit = [&](std::uint16_t seq) {
-                const rtp::Packet* p = buf->get(seq);
-                if (p) {
-                    ::sendto(udp_fd_, p->data(), p->size(), 0,
+                rtp::Packet p;
+                if (buf->get(seq, p)) {
+                    if (pacer_) pacer_->consume(p.size());
+                    ::sendto(udp_fd_, p.data(), p.size(), 0,
                              reinterpret_cast<sockaddr*>(&dst), sizeof(dst));
                 }
             };
@@ -360,6 +357,25 @@ void RtpServer::handle_rtcp(const std::uint8_t* data, std::size_t size,
                 if (blp & (1u << i)) retransmit(pid + 1 + i);
             }
         }
+        return;
+    }
+
+    if (pt == 201) {
+        // Receiver Report. Scan the report blocks for our video SSRC and
+        // surface fraction-lost to the bitrate controller.
+        const std::uint8_t rc = b0 & 0x1F;
+        std::size_t off = 8;  // header + reporter SSRC
+        for (std::uint8_t i = 0; i < rc && off + 24 <= pkt_len;
+             ++i, off += 24) {
+            std::uint32_t block_ssrc =
+                (static_cast<std::uint32_t>(data[off]) << 24) |
+                (data[off + 1] << 16) | (data[off + 2] << 8) | data[off + 3];
+            if (block_ssrc != video_ssrc_) continue;
+            const float fraction_lost =
+                static_cast<float>(data[off + 4]) / 256.0f;
+            if (on_loss_report) on_loss_report(fraction_lost);
+        }
+        return;
     }
 }
 

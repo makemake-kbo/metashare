@@ -13,6 +13,7 @@ std::string serialize(const Message& m) {
     case Type::kReady: os << "READY " << m.body; break;
     case Type::kStart: return "START";
     case Type::kBye: return "BYE";
+    case Type::kPing: return "PING";
     }
     return os.str();
 }
@@ -26,6 +27,10 @@ bool parse(std::string_view line, Message& out) {
     }
     if (line == "BYE") {
         out.type = Type::kBye;
+        return true;
+    }
+    if (line == "PING") {
+        out.type = Type::kPing;
         return true;
     }
 
