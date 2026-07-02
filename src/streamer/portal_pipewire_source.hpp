@@ -88,10 +88,16 @@ class PortalPipeWireSource final : public FrameSource {
     int stride_ = 0;
 
     // Double buffer: PipeWire fills back_, next_frame() consumes front_.
+    // out_ is a third, consumer-owned staging buffer that the PipeWire thread
+    // never touches: next_frame() copies front_ into it under mu_ and returns
+    // it, so the frame handed to the encoder stays stable until the next call
+    // even when PipeWire delivers a burst of new frames (as VIRTUAL monitors
+    // do). Without it the encoder can read a buffer being overwritten -> tears.
     std::mutex mu_;
     std::condition_variable cv_;
     AVFrame* front_ = nullptr;
     AVFrame* back_ = nullptr;
+    AVFrame* out_ = nullptr;
     bool have_new_ = false;
     std::atomic<bool> running_{false};
     std::int64_t pts_usec_ = 0;

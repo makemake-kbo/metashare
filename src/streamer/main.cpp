@@ -618,27 +618,60 @@ int main(int argc, char** argv) {
                 raw->server->broadcast_video(data, size, pts_usec, key);
             };
             std::string thread_err;
+            // Pointer to the most recent frame. next_frame() guarantees the
+            // returned frame stays valid until the next call, so we can hold it
+            // and re-encode it when the source goes idle (see kRepeatInterval).
+            AVFrame* last = nullptr;
+            auto last_encode = std::chrono::steady_clock::now();
+            std::int64_t last_pts = 0;
+            // Minimum send cadence. Virtual monitors are damage-driven: the
+            // compositor only delivers a PipeWire buffer when their content
+            // changes, so a static virtual desktop can go seconds between
+            // frames. That stalls the stream and — worse — defers PLI-forced
+            // keyframes (Encoder services force_keyframe() only on the next
+            // encode() call), so any packet loss shows as corruption until the
+            // next content change. Repeating the last frame at a ~20 fps floor
+            // keeps the link alive and lets a client's keyframe request take
+            // effect within one interval. On the physical monitor, which
+            // already delivers steadily, this branch almost never fires.
+            constexpr auto kRepeatInterval = std::chrono::milliseconds(50);
             while (raw->running && !g_stop) {
                 AVFrame* frame = nullptr;
                 std::int64_t pts = 0;
                 int r = raw->source->next_frame(&frame, pts);
-                if (r == 0) continue;
                 if (r < 0) {
                     std::fprintf(stderr, "[monitor %d] source ended\n",
                                  raw->index);
                     break;
                 }
-                // Take our own reference: next_frame() returns a pointer to the
-                // source's internal front_ buffer, which on_param_changed() may
-                // free/realloc while we're encoding. av_frame_ref shares the
-                // underlying data safely.
-                AVFrame* safe = av_frame_alloc();
-                if (!safe || av_frame_ref(safe, frame) < 0) {
-                    if (safe) av_frame_free(&safe);
-                    continue;
+
+                AVFrame* enc_frame = nullptr;
+                std::int64_t enc_pts = 0;
+                if (r > 0) {
+                    last = frame;
+                    enc_frame = frame;
+                    enc_pts = pts;
+                } else {
+                    // r == 0: source timed out with no new frame. Repeat the
+                    // last frame if we have one and the cadence floor elapsed.
+                    const auto now = std::chrono::steady_clock::now();
+                    if (!last || now - last_encode < kRepeatInterval) continue;
+                    enc_frame = last;
+                    enc_pts = std::chrono::duration_cast<std::chrono::microseconds>(
+                                  now.time_since_epoch())
+                                  .count();
                 }
-                bool ok = raw->encoder->encode(safe, pts, sink, thread_err);
-                av_frame_free(&safe);
+
+                // Keep pts strictly monotonic. Real capture timestamps and the
+                // wall-clock stamps we synthesize for repeats share a clock, but
+                // interleaving them can still step backward by a hair — which a
+                // decoder reads as a timestamp glitch. Never let that happen.
+                if (enc_pts <= last_pts) enc_pts = last_pts + 1;
+                last_pts = enc_pts;
+
+                bool ok = raw->encoder->encode(enc_frame, enc_pts, sink,
+                                               thread_err);
+                last_encode = std::chrono::steady_clock::now();
                 if (!ok) {
                     std::fprintf(stderr, "[monitor %d] encode error: %s\n",
                                  raw->index, thread_err.c_str());

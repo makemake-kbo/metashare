@@ -65,10 +65,14 @@ class MutterVirtualSource final : public FrameSource {
     struct spa_hook stream_listener_;  // per-instance; must NOT be static
 
     // Double buffer: PipeWire fills back_, next_frame() consumes front_.
+    // out_ is a consumer-owned staging buffer the PipeWire thread never
+    // touches; next_frame() copies front_ into it so the returned frame stays
+    // stable until the next call (see PortalPipeWireSource for the rationale).
     std::mutex mu_;
     std::condition_variable cv_;
     AVFrame* front_ = nullptr;
     AVFrame* back_ = nullptr;
+    AVFrame* out_ = nullptr;
     bool have_new_ = false;
     std::atomic<bool> running_{false};
     std::int64_t pts_usec_ = 0;

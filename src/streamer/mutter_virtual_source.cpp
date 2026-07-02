@@ -267,6 +267,7 @@ void MutterVirtualSource::stop() {
     std::lock_guard<std::mutex> lk(mu_);
     if (front_) av_frame_free(&front_);
     if (back_) av_frame_free(&back_);
+    if (out_) av_frame_free(&out_);
 }
 
 int MutterVirtualSource::next_frame(AVFrame** out, std::int64_t& pts_usec) {
@@ -276,9 +277,27 @@ int MutterVirtualSource::next_frame(AVFrame** out, std::int64_t& pts_usec) {
         return 0;
     if (!running_) return -1;
     have_new_ = false;
-    *out = front_;
+    if (!front_) return 0;
+    // Copy into out_ (never touched by the PipeWire thread) so the returned
+    // frame stays valid until the next call even under a burst of new frames.
+    if (!out_ || out_->width != front_->width ||
+        out_->height != front_->height || out_->format != front_->format) {
+        if (out_) av_frame_free(&out_);
+        out_ = av_frame_alloc();
+        if (!out_) return 0;
+        out_->format = front_->format;
+        out_->width = front_->width;
+        out_->height = front_->height;
+        if (av_frame_get_buffer(out_, 32) < 0) {
+            av_frame_free(&out_);
+            return 0;
+        }
+    }
+    if (av_frame_make_writable(out_) < 0) return 0;
+    av_frame_copy(out_, front_);
+    *out = out_;
     pts_usec = pts_usec_;
-    return front_ ? 1 : 0;
+    return 1;
 }
 
 }  // namespace metashare
