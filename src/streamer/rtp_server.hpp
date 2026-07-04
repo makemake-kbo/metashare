@@ -12,11 +12,14 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 
 #include <netinet/in.h>
 
@@ -46,6 +49,10 @@ class RtpServer {
 
     bool start(std::uint16_t signaling_port, std::string& err);
     void stop();
+
+    // Human-readable id (the monitor index) used only to tag the 1 Hz stats
+    // line, so per-monitor loss/retransmit rates are easy to compare in the log.
+    void set_id(int id) { id_ = id; }
 
     // Format must be set before start() — it picks the packetizer and feeds
     // the HELLO JSON.
@@ -86,6 +93,10 @@ class RtpServer {
     // Open the UDP socket (once) and start the NACK receiver thread.
     bool open_udp(std::string& err);
     void nack_loop();
+    // Drains send_q_ and writes packets to the socket at the paced rate. Runs
+    // on its own thread so the token-bucket sleep never blocks the capture
+    // thread that calls broadcast_video().
+    void sender_loop();
     void handle_rtcp(const std::uint8_t* data, std::size_t size,
                      const sockaddr_in& from);
     // Build + send an RTCP Sender Report for one SSRC to the client.
@@ -106,6 +117,15 @@ class RtpServer {
     std::atomic<bool> running_{false};
     std::thread nack_thread_;
 
+    // Dedicated send path. broadcast_video() packetizes on the capture thread
+    // and pushes onto send_q_; sender_thread_ drains it and runs the pacing
+    // sleep, so an IDR burst delays only the wire, never the next capture tick.
+    std::thread sender_thread_;
+    std::mutex send_mu_;
+    std::condition_variable send_cv_;
+    std::deque<rtp::Packet> send_q_;
+    std::atomic<std::uint64_t> send_drops_{0};  // packets shed on queue overflow
+
     mutable std::mutex peer_mu_;
     bool peer_streaming_ = false;
     sockaddr_in peer_udp_{};  // where to send RTP (client ip:port)
@@ -124,6 +144,12 @@ class RtpServer {
     std::atomic<std::uint64_t> audio_octets_{0};
     std::atomic<std::uint32_t> video_last_ts_{0};
     std::atomic<std::uint32_t> audio_last_ts_{0};
+
+    // Diagnostics: monitor id, retransmitted-packet count, and the last
+    // fraction-lost the client reported. Printed once per second by nack_loop().
+    int id_ = 0;
+    std::atomic<std::uint64_t> video_retx_count_{0};
+    std::atomic<float> last_loss_{0.0f};
 };
 
 }  // namespace metashare

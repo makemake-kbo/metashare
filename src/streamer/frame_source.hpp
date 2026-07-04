@@ -45,6 +45,20 @@ class FrameSource {
     //   0  -> no frame yet / transient; caller should retry
     //  -1  -> stream ended or fatal error
     virtual int next_frame(AVFrame** out, std::int64_t& pts_usec) = 0;
+
+    // Non-blocking pull for a fixed-rate capture loop: return the most recently
+    // captured frame *without* waiting for a new one, so the caller's own steady
+    // clock — not the source's (possibly bursty) delivery — sets the cadence.
+    //   1  -> a new frame arrived since the last call; *out updated
+    //   0  -> nothing new; caller should re-encode the previously returned frame
+    //  -1  -> stream ended or fatal error
+    // Damage-driven sources (compositor screencast) deliver in tight bursts then
+    // go quiet; pulling the latest non-blocking each tick and stamping an even
+    // PTS turns that into a smooth stream. Self-paced sources have no burst to
+    // decouple from, so the default just forwards to the blocking next_frame().
+    virtual int latest_frame(AVFrame** out, std::int64_t& pts_usec) {
+        return next_frame(out, pts_usec);
+    }
 };
 
 }  // namespace metashare

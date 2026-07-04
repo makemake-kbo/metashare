@@ -304,11 +304,15 @@ public final class StreamSession {
 
         // 3. Bring up the RTP receiver on an ephemeral port.
         final RtpReceiver rtp = new RtpReceiver(
-                (annexB, ptsUsec, keyframe) -> videoDecoder.feed(annexB, ptsUsec, keyframe),
+                (annexB, ptsUsec, keyframe) ->
+                        videoDecoder.feed(annexB, ptsUsec, keyframe),
                 (haveAudio && audioDecoder != null)
                         ? (data, off, len, ptsUsec) -> audioDecoder.feed(data, off, len, ptsUsec)
                         : null);
         rtp.configure(vSsrc, vPt, vCodec, vClock, aSsrc, aPt, aClock);
+        // Let the decoder ask for a fresh IDR (throttled) if it is ever forced
+        // to drop one under input-buffer starvation.
+        videoDecoder.setKeyframeRequester(rtp::requestKeyframe);
         rtp.start(0);
         int udpPort = rtp.getLocalPort();
         Log.i(TAG, "RTP receiver on udp/" + udpPort);

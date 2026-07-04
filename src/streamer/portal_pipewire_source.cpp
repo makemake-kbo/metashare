@@ -519,13 +519,8 @@ void PortalPipeWireSource::stop() {
     portal_.reset();  // closes the D-Bus connection + session
 }
 
-int PortalPipeWireSource::next_frame(AVFrame** out, std::int64_t& pts_usec) {
-    std::unique_lock<std::mutex> lk(mu_);
-    if (!cv_.wait_for(lk, std::chrono::milliseconds(500),
-                      [&] { return have_new_ || !running_; }))
-        return 0;
-    if (!running_) return -1;
-    have_new_ = false;
+int PortalPipeWireSource::deliver_front_locked(AVFrame** out,
+                                               std::int64_t& pts_usec) {
     if (!front_) return 0;
     // Copy into out_ (which on_process() never touches) so the returned frame
     // stays valid until the next call, per the FrameSource contract — the
@@ -548,6 +543,27 @@ int PortalPipeWireSource::next_frame(AVFrame** out, std::int64_t& pts_usec) {
     *out = out_;
     pts_usec = pts_usec_;
     return 1;
+}
+
+int PortalPipeWireSource::next_frame(AVFrame** out, std::int64_t& pts_usec) {
+    std::unique_lock<std::mutex> lk(mu_);
+    if (!cv_.wait_for(lk, std::chrono::milliseconds(500),
+                      [&] { return have_new_ || !running_; }))
+        return 0;
+    if (!running_) return -1;
+    have_new_ = false;
+    return deliver_front_locked(out, pts_usec);
+}
+
+int PortalPipeWireSource::latest_frame(AVFrame** out, std::int64_t& pts_usec) {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (!running_) return -1;
+    // No wait: if nothing has been captured since the last pull, tell the caller
+    // to re-encode its previous frame. This is what decouples the encode cadence
+    // from the compositor's bursty delivery — the caller ticks on its own clock.
+    if (!have_new_) return 0;
+    have_new_ = false;
+    return deliver_front_locked(out, pts_usec);
 }
 
 }  // namespace metashare

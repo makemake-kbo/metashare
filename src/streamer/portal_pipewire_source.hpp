@@ -63,6 +63,7 @@ class PortalPipeWireSource final : public FrameSource {
     void stop() override;
     SourceFormat format() const override { return fmt_; }
     int next_frame(AVFrame** out, std::int64_t& pts_usec) override;
+    int latest_frame(AVFrame** out, std::int64_t& pts_usec) override;
 
     // --- called from the PipeWire thread (public so C callbacks can reach) ---
     void on_param_changed(const struct spa_pod* param);
@@ -72,6 +73,12 @@ class PortalPipeWireSource final : public FrameSource {
     // Drives the xdg-desktop-portal ScreenCast dialog; returns a PipeWire fd
     // (owned by caller) and the node id to attach to.
     bool run_portal(int& pw_fd, std::uint32_t& node_id, std::string& err);
+
+    // Copy the current front_ into the consumer-owned out_ and hand it back.
+    // Caller must hold mu_. Returns 1 on success, 0 if there is nothing to
+    // deliver yet or the staging copy failed. Shared by next_frame() (after its
+    // blocking wait) and latest_frame() (non-blocking).
+    int deliver_front_locked(AVFrame** out, std::int64_t& pts_usec);
 
     SourceFormat fmt_{};
     PortalOptions opts_;

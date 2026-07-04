@@ -36,7 +36,7 @@
         -->
         <activity
             android:name=".MonitorActivity"
-            android:exported="false"
+            android:exported="true"
             android:resizeableActivity="true"
             android:screenOrientation="landscape"
             android:configChanges="screenSize|screenLayout|orientation|keyboardHidden|keyboard|navigation|uiMode|density" />

@@ -78,6 +78,7 @@ bool RtpServer::start(std::uint16_t signaling_port, std::string& err) {
 
     running_ = true;
     nack_thread_ = std::thread([this] { nack_loop(); });
+    sender_thread_ = std::thread([this] { sender_loop(); });
 
     if (!signaling_.start(
             signaling_port,
@@ -119,11 +120,14 @@ bool RtpServer::open_udp(std::string& err) {
 void RtpServer::stop() {
     signaling_.stop();
     running_ = false;
+    send_cv_.notify_all();  // wake the sender thread out of its wait
     if (udp_fd_ >= 0) {
         // Wake the NACK recvfrom.
         ::shutdown(udp_fd_, SHUT_RDWR);
     }
     if (nack_thread_.joinable()) nack_thread_.join();
+    // Join the sender before closing the socket it writes to.
+    if (sender_thread_.joinable()) sender_thread_.join();
     if (udp_fd_ >= 0) {
         ::close(udp_fd_);
         udp_fd_ = -1;
@@ -203,31 +207,82 @@ void RtpServer::on_message(const signal::Message& m) {
 void RtpServer::broadcast_video(const std::uint8_t* data, std::size_t size,
                                 std::int64_t pts_usec, bool keyframe) {
     (void)keyframe;
-    sockaddr_in dst{};
     {
         std::lock_guard<std::mutex> lk(peer_mu_);
         if (!peer_streaming_) return;
-        dst = peer_udp_;
     }
 
     std::vector<rtp::Packet> packets;
     video_packer_->packetize(data, size, pts_usec, packets);
+    if (packets.empty()) return;
+
     for (const auto& pkt : packets) {
         video_retx_.record(rtp::seq_of(pkt), pkt);
         video_pkts_.fetch_add(1, std::memory_order_relaxed);
         video_octets_.fetch_add(pkt.size(), std::memory_order_relaxed);
-        // The shared pacer smooths keyframe bursts across *all* pipelines so
-        // the aggregate stays under what the WiFi link can absorb.
-        if (pacer_) pacer_->consume(pkt.size());
-        ::sendto(udp_fd_, pkt.data(), pkt.size(), 0,
-                 reinterpret_cast<sockaddr*>(&dst), sizeof(dst));
     }
-    if (!packets.empty()) {
-        video_last_ts_.store(
-            static_cast<std::uint32_t>(
-                (static_cast<std::uint64_t>(pts_usec) * rtp::kVideoClockRate) /
-                1'000'000),
-            std::memory_order_relaxed);
+
+    // Hand the packets to sender_thread_ instead of writing (and pacing) them
+    // here. The pacer's token-bucket sleep used to run inline on this — the
+    // capture/encode thread — so a big IDR could block it for hundreds of ms
+    // and break the even-PTS cadence. Enqueue-and-return keeps this thread free
+    // to grab the next frame on the tick grid; the wire is still paced, just
+    // from the other side of this queue.
+    {
+        std::lock_guard<std::mutex> lk(send_mu_);
+        // Bound the backlog. A healthy stream drains between keyframes, so an
+        // overflow means the link genuinely can't carry the encoder's output;
+        // shed the oldest (most stale) packets rather than grow latency without
+        // limit — the client's NACK/PLI path resyncs from the next keyframe.
+        constexpr std::size_t kMaxQueued = 4096;
+        if (send_q_.size() + packets.size() > kMaxQueued) {
+            std::size_t overflow = send_q_.size() + packets.size() - kMaxQueued;
+            while (overflow-- > 0 && !send_q_.empty()) send_q_.pop_front();
+            send_drops_.fetch_add(1, std::memory_order_relaxed);
+        }
+        for (auto& pkt : packets) send_q_.push_back(std::move(pkt));
+    }
+    send_cv_.notify_one();
+
+    video_last_ts_.store(
+        static_cast<std::uint32_t>(
+            (static_cast<std::uint64_t>(pts_usec) * rtp::kVideoClockRate) /
+            1'000'000),
+        std::memory_order_relaxed);
+}
+
+void RtpServer::sender_loop() {
+    std::vector<rtp::Packet> batch;
+    while (running_) {
+        {
+            std::unique_lock<std::mutex> lk(send_mu_);
+            send_cv_.wait(lk, [this] { return !running_ || !send_q_.empty(); });
+            if (!running_ && send_q_.empty()) break;
+            // Take everything queued so far in one swipe (still paced per packet
+            // below); anything that arrives while we drain waits for the next
+            // pass. Keeps send_mu_ held only briefly.
+            batch.clear();
+            batch.reserve(send_q_.size());
+            for (auto& p : send_q_) batch.push_back(std::move(p));
+            send_q_.clear();
+        }
+        sockaddr_in dst{};
+        bool streaming;
+        {
+            std::lock_guard<std::mutex> lk(peer_mu_);
+            streaming = peer_streaming_;
+            dst = peer_udp_;
+        }
+        if (!streaming) continue;  // client gone — drop the batch
+        for (const auto& pkt : batch) {
+            if (!running_) break;
+            // The shared pacer smooths keyframe bursts across *all* pipelines so
+            // the aggregate stays under what the WiFi link can absorb. Now that
+            // it runs here, the sleep costs wire latency, not a capture stall.
+            if (pacer_) pacer_->consume(pkt.size());
+            ::sendto(udp_fd_, pkt.data(), pkt.size(), 0,
+                     reinterpret_cast<sockaddr*>(&dst), sizeof(dst));
+        }
     }
 }
 
@@ -266,6 +321,7 @@ void RtpServer::nack_loop() {
     timeval tv{0, 200000};
     ::setsockopt(udp_fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     auto last_sr = std::chrono::steady_clock::now();
+    std::uint64_t prev_pkts = 0, prev_retx = 0, prev_drops = 0;
     while (running_) {
         socklen_t flen = sizeof(from);
         ssize_t n = ::recvfrom(udp_fd_, buf.data(), buf.size(), 0,
@@ -293,6 +349,27 @@ void RtpServer::nack_loop() {
                                    video_octets_.load(), video_last_ts_.load());
                 send_sender_report(audio_ssrc_, audio_pkts_.load(),
                                    audio_octets_.load(), audio_last_ts_.load());
+                // Per-monitor throughput/health, so monitor 0 (physical) and
+                // the virtual monitors can be compared at a glance. High retx or
+                // loss on the virtual line => the flicker is packet loss on the
+                // wire; near-zero on both while it still flickers => the problem
+                // is downstream (client decode of a second concurrent stream).
+                const std::uint64_t pkts = video_pkts_.load();
+                const std::uint64_t retx = video_retx_count_.load();
+                const std::uint64_t drops = send_drops_.load();
+                std::fprintf(stderr,
+                             "[monitor %d stats] %llu pkt/s, %llu retx/s, "
+                             "%llu qdrop/s, loss %.1f%%\n",
+                             id_,
+                             static_cast<unsigned long long>(pkts - prev_pkts),
+                             static_cast<unsigned long long>(retx - prev_retx),
+                             static_cast<unsigned long long>(drops - prev_drops),
+                             static_cast<double>(
+                                 last_loss_.load(std::memory_order_relaxed)) *
+                                 100.0);
+                prev_pkts = pkts;
+                prev_retx = retx;
+                prev_drops = drops;
             }
         }
     }
@@ -348,6 +425,7 @@ void RtpServer::handle_rtcp(const std::uint8_t* data, std::size_t size,
                 rtp::Packet p;
                 if (buf->get(seq, p)) {
                     if (pacer_) pacer_->consume(p.size());
+                    video_retx_count_.fetch_add(1, std::memory_order_relaxed);
                     ::sendto(udp_fd_, p.data(), p.size(), 0,
                              reinterpret_cast<sockaddr*>(&dst), sizeof(dst));
                 }
@@ -373,6 +451,7 @@ void RtpServer::handle_rtcp(const std::uint8_t* data, std::size_t size,
             if (block_ssrc != video_ssrc_) continue;
             const float fraction_lost =
                 static_cast<float>(data[off + 4]) / 256.0f;
+            last_loss_.store(fraction_lost, std::memory_order_relaxed);
             if (on_loss_report) on_loss_report(fraction_lost);
         }
         return;

@@ -72,6 +72,12 @@ public final class RtpReceiver {
     // Keyframe request issued before the remote endpoint is known; serviced as
     // soon as the first RTP packet reveals where to send the PLI.
     private volatile boolean pliPending = false;
+    // Throttle for externally-requested PLIs (e.g. one per dropped frame during
+    // a decoder overload): without it a drop storm floods the streamer with
+    // keyframe requests, each of which is a big IDR that makes the overload
+    // worse. One in-flight request every 250 ms is plenty to drive recovery.
+    private volatile long lastExternalPliMs = 0;
+    private static final long EXTERNAL_PLI_MIN_INTERVAL_MS = 250;
 
     // Receiver-report statistics (video SSRC only; loop thread).
     private long statFirstExtSeq = -1;   // extended seq of first packet
@@ -130,6 +136,9 @@ public final class RtpReceiver {
 
     /** Send a PLI so the streamer emits a keyframe (e.g. right after START). */
     public void requestKeyframe() {
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastExternalPliMs < EXTERNAL_PLI_MIN_INTERVAL_MS) return;
+        lastExternalPliMs = now;
         if (remoteAddress == null) {
             // No RTP received yet, so we don't know the streamer's UDP source
             // endpoint. Defer; the receive loop fires the PLI on first packet.

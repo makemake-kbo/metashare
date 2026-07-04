@@ -520,6 +520,7 @@ int main(int argc, char** argv) {
 
         // --- RTP server (signaling + raw UDP media transport) ---
         p->server = std::make_unique<RtpServer>();
+        p->server->set_id(i);
         VideoFormat vfmt;
         vfmt.width = fmt.width;
         vfmt.height = fmt.height;
@@ -620,59 +621,114 @@ int main(int argc, char** argv) {
             std::string thread_err;
             // Pointer to the most recent frame. next_frame() guarantees the
             // returned frame stays valid until the next call, so we can hold it
-            // and re-encode it when the source goes idle (see kRepeatInterval).
+            // across iterations and re-encode it when the source goes idle.
             AVFrame* last = nullptr;
-            auto last_encode = std::chrono::steady_clock::now();
             std::int64_t last_pts = 0;
-            // Minimum send cadence. Virtual monitors are damage-driven: the
-            // compositor only delivers a PipeWire buffer when their content
-            // changes, so a static virtual desktop can go seconds between
-            // frames. That stalls the stream and — worse — defers PLI-forced
-            // keyframes (Encoder services force_keyframe() only on the next
-            // encode() call), so any packet loss shows as corruption until the
-            // next content change. Repeating the last frame at a ~20 fps floor
-            // keeps the link alive and lets a client's keyframe request take
-            // effect within one interval. On the physical monitor, which
-            // already delivers steadily, this branch almost never fires.
-            constexpr auto kRepeatInterval = std::chrono::milliseconds(50);
+
+            // Steady send cadence, decoupled from the compositor's delivery.
+            // Mutter's virtual monitors are damage-driven: on_process() fires
+            // in tight bursts (sub-millisecond spacing) then goes quiet for
+            // hundreds of milliseconds, whereas the physical monitor is sampled
+            // at a steady vsync. Both used to stamp PTS with
+            // steady_clock::now() at delivery time and encode on every buffer,
+            // so the bursty virtual cadence flowed straight through to the RTP
+            // clock and the client showed it as heavy jitter.
+            //
+            // We now tick at a steady 1/fps and always encode the most recently
+            // captured frame, mirroring TestPatternSource's pacing. Sleeping
+            // before each pull means burst frames that arrive between ticks are
+            // naturally dropped by the source's double buffer — we always grab
+            // the latest on wake, so no intermediate content is missed, only
+            // the irregular delivery timing is smoothed away.
+            const SourceFormat fmt = raw->source->format();
+            // Microseconds per frame, rounded from the source's fps rational.
+            // Integer math avoids float-rounding drift and keeps the pacing
+            // clock exact.
+            const std::int64_t period_usec =
+                (1'000'000LL * (fmt.fps_den ? fmt.fps_den : 1) +
+                 (fmt.fps_num ? fmt.fps_num : 60) / 2) /
+                (fmt.fps_num ? fmt.fps_num : 60);
+            const auto period = std::chrono::microseconds(period_usec);
+            auto next_tick = std::chrono::steady_clock::now() + period;
+            // One-shot startup line so it is unambiguous from stderr that this
+            // paced capture loop (not an older build) is the code running.
+            std::fprintf(stderr,
+                         "[monitor %d] pacer: period=%lldus (%.3f fps)\n",
+                         raw->index, static_cast<long long>(period_usec),
+                         1'000'000.0 / static_cast<double>(period_usec));
+
+            // Non-blocking pull is what makes the pacing real. latest_frame()
+            // returns immediately with either a fresh frame or "nothing new"
+            // (in which case we re-encode `last`), so the loop period is set
+            // solely by sleep_until(next_tick) — never dragged by the
+            // compositor's bursty delivery the way the blocking next_frame()
+            // was. Every tick encodes something (fresh or repeated) at an even
+            // PTS, which also keeps the link alive and lets a PLI-forced
+            // keyframe land within one interval on an otherwise idle monitor.
+
+            // TEMP DIAG (jitter investigation): per-second stats of the enc_pts
+            // deltas actually handed to the encoder. Even deltas (~period_usec)
+            // and n≈fps = a smooth playout clock; a wide min/max spread or n<fps
+            // = the PTS cadence is still bursty. Remove once settled.
+            std::int64_t d_prev = 0, d_min = 0, d_max = 0, d_sum = 0, d_cnt = 0;
+            auto d_last = std::chrono::steady_clock::now();
+
             while (raw->running && !g_stop) {
+                std::this_thread::sleep_until(next_tick);
+                next_tick += period;
+                auto now = std::chrono::steady_clock::now();
+                if (next_tick < now) next_tick = now + period;  // fell behind
+
                 AVFrame* frame = nullptr;
                 std::int64_t pts = 0;
-                int r = raw->source->next_frame(&frame, pts);
+                const int r = raw->source->latest_frame(&frame, pts);
                 if (r < 0) {
                     std::fprintf(stderr, "[monitor %d] source ended\n",
                                  raw->index);
                     break;
                 }
+                if (r > 0) last = frame;
+                if (!last) continue;  // no frame captured yet
 
-                AVFrame* enc_frame = nullptr;
-                std::int64_t enc_pts = 0;
-                if (r > 0) {
-                    last = frame;
-                    enc_frame = frame;
-                    enc_pts = pts;
-                } else {
-                    // r == 0: source timed out with no new frame. Repeat the
-                    // last frame if we have one and the cadence floor elapsed.
-                    const auto now = std::chrono::steady_clock::now();
-                    if (!last || now - last_encode < kRepeatInterval) continue;
-                    enc_frame = last;
-                    enc_pts = std::chrono::duration_cast<std::chrono::microseconds>(
-                                  now.time_since_epoch())
-                                  .count();
-                }
-
-                // Keep pts strictly monotonic. Real capture timestamps and the
-                // wall-clock stamps we synthesize for repeats share a clock, but
-                // interleaving them can still step backward by a hair — which a
-                // decoder reads as a timestamp glitch. Never let that happen.
-                if (enc_pts <= last_pts) enc_pts = last_pts + 1;
+                // PTS snapped to absolute period boundaries of the wall clock,
+                // so consecutive ticks land on consecutive multiples of
+                // period_usec — a perfectly even RTP clock for the client's
+                // jitter buffer, regardless of how bursty capture was. `now` is
+                // the post-sleep tick time (latest_frame() above doesn't block),
+                // so it already sits on the grid.
+                const auto now_us =
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        now.time_since_epoch())
+                        .count();
+                const std::int64_t tick =
+                    (now_us + period_usec / 2) / period_usec;
+                std::int64_t enc_pts = tick * period_usec;
+                if (enc_pts <= last_pts) enc_pts = last_pts + period_usec;
                 last_pts = enc_pts;
 
-                bool ok = raw->encoder->encode(enc_frame, enc_pts, sink,
-                                               thread_err);
-                last_encode = std::chrono::steady_clock::now();
-                if (!ok) {
+                if (d_prev != 0) {
+                    const std::int64_t d = enc_pts - d_prev;
+                    if (d_cnt == 0 || d < d_min) d_min = d;
+                    if (d_cnt == 0 || d > d_max) d_max = d;
+                    d_sum += d;
+                    ++d_cnt;
+                }
+                d_prev = enc_pts;
+                if (now - d_last >= std::chrono::seconds(1)) {
+                    std::fprintf(stderr,
+                                 "[monitor %d] pts-delta 1s: n=%lld min=%lldus "
+                                 "max=%lldus mean=%lldus (target %lld)\n",
+                                 raw->index, static_cast<long long>(d_cnt),
+                                 static_cast<long long>(d_min),
+                                 static_cast<long long>(d_max),
+                                 static_cast<long long>(d_cnt ? d_sum / d_cnt
+                                                              : 0),
+                                 static_cast<long long>(period_usec));
+                    d_min = d_max = d_sum = d_cnt = 0;
+                    d_last = now;
+                }
+
+                if (!raw->encoder->encode(last, enc_pts, sink, thread_err)) {
                     std::fprintf(stderr, "[monitor %d] encode error: %s\n",
                                  raw->index, thread_err.c_str());
                     break;
