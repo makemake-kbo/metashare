@@ -91,13 +91,28 @@ public final class VideoDecoder {
     private long diagLastLogMs = 0;
 
     // Saved configuration so we can rebuild the codec if it hits a fatal error
-    // (see onError → recover()).
-    private Surface surface;
+    // (see onError → recover()). `surface` is volatile because setSurface()
+    // updates it from the UI thread while the codec callbacks read it on cbHandler.
+    private volatile Surface surface;
     private String mime;
     private int width;
     private int height;
     private Handler cbHandler;
     private volatile boolean recovering = false;
+
+    // Self-heal a wedged codec. A codec can stop delivering input buffers for
+    // good — it errored while the surface was momentarily invalid (so recover()
+    // had to defer), or a shared hardware instance stalled. Nothing re-inits us
+    // mid-session, so without this the decoder drops every keyframe for lack of a
+    // buffer, awaitingKeyframe never clears, and it PLI-loops on a frozen picture
+    // forever. Two signals drive recovery: consecutive keyframes we could not
+    // queue (codec isn't recycling buffers), and a deferred recover() waiting for
+    // the surface to come back.
+    private int keyframeDropStreak = 0;
+    private static final int WEDGE_RESET_AFTER_KEYFRAME_DROPS = 2;
+    private int recoverRetries = 0;
+    private static final int RECOVER_MAX_RETRIES = 50;  // ~10s at 200ms
+    private static final long RECOVER_RETRY_MS = 200;
 
     // Playout anchor mapping the sender's PTS timeline onto this device's
     // System.nanoTime() render clock (see scheduleRender). Established on the
@@ -160,7 +175,20 @@ public final class VideoDecoder {
         // nothing to render to — reconfiguring would just fail. Leave the gate
         // armed and let the Activity's surface-recreation path re-init us.
         if (surface == null || !surface.isValid()) {
-            Log.i(TAG, "codec error but surface invalid — deferring to surface recreate");
+            // The surface is momentarily gone (panel/window churn). We can't
+            // reconfigure onto an invalid surface, but nothing else re-inits us
+            // mid-session, so don't drop the recovery on the floor — re-check
+            // shortly and rebuild once the surface is valid again. Keep
+            // recovering=true across the wait so feed()/onError don't re-trigger.
+            if (++recoverRetries <= RECOVER_MAX_RETRIES) {
+                Log.i(TAG, "codec error but surface invalid — retrying recover ("
+                        + recoverRetries + ")");
+                cbHandler.postDelayed(this::recover, RECOVER_RETRY_MS);
+                return;
+            }
+            Log.w(TAG, "surface still invalid after " + recoverRetries
+                    + " retries — giving up recovery until re-init");
+            recoverRetries = 0;
             recovering = false;
             return;
         }
@@ -170,6 +198,8 @@ public final class VideoDecoder {
             firstFrameDone = false;
             haveAnchor = false;        // new IDR re-anchors the playout timeline
             lastRenderNs = 0;          // and restarts the forward-only clock
+            keyframeDropStreak = 0;
+            recoverRetries = 0;
             codec.reset();
             codec.setCallback(callback, cbHandler);
             codec.configure(buildFormat(), surface, null, 0);
@@ -318,10 +348,25 @@ public final class VideoDecoder {
             diagDrops++;
             if (!keyframe) diagInterDrops++;
             maybeLogDiag();
-            // A dropped keyframe leaves us with no resync point; ask the
-            // streamer for a fresh one (RtpReceiver throttles these) rather
-            // than riding out corruption until the next periodic IDR.
-            if (keyframe && keyframeRequester != null) keyframeRequester.request();
+            if (keyframe) {
+                // No input buffer for a keyframe even after the wait means the
+                // codec isn't recycling buffers — it is wedged (an earlier error
+                // whose recovery had to defer on an invalid surface, or a stalled
+                // shared instance). Dropping it only perpetuates the awaiting-
+                // keyframe PLI loop on a frozen picture, so once a couple of
+                // consecutive keyframes go undecodable, rebuild the codec.
+                if (++keyframeDropStreak >= WEDGE_RESET_AFTER_KEYFRAME_DROPS
+                        && !recovering) {
+                    Log.w(TAG, "keyframe undecodable x" + keyframeDropStreak
+                            + " — codec wedged, forcing reset");
+                    recovering = true;
+                    keyframeDropStreak = 0;
+                    cbHandler.post(this::recover);
+                }
+                // Also ask the streamer for a fresh IDR (RtpReceiver throttles
+                // these) so a resync point is inbound the moment we can take it.
+                if (keyframeRequester != null) keyframeRequester.request();
+            }
             return;
         }
         try {
@@ -336,6 +381,7 @@ public final class VideoDecoder {
             int flags = keyframe ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
             codec.queueInputBuffer(idx, 0, annexB.length, ptsUsec, flags);
             if (keyframe) awaitingKeyframe = false;  // parameter sets now in
+            keyframeDropStreak = 0;  // codec is accepting input again
             diagFed++;
             maybeLogDiag();
         } catch (Exception e) {
@@ -346,6 +392,43 @@ public final class VideoDecoder {
     /** Wire the transport used to request a fresh keyframe on a dropped IDR. */
     public void setKeyframeRequester(KeyframeRequester requester) {
         this.keyframeRequester = requester;
+    }
+
+    /**
+     * Rebind the codec to a recreated output surface. The Quest destroys and
+     * recreates a SurfaceView's Surface during normal panel churn; the codec
+     * bound to the old (now invalid) Surface errors and — with nothing else
+     * re-initing it mid-session — wedges permanently. Prefer a live {@link
+     * MediaCodec#setOutputSurface} swap (seamless, no keyframe wait); if the
+     * codec already errored on the dead surface that throws, so fall back to a
+     * full reset onto the new surface. Runs the codec work on cbHandler so it is
+     * serialized with the codec's error/output callbacks.
+     */
+    public void setSurface(Surface s) {
+        if (released || s == null || !s.isValid()) return;
+        this.surface = s;
+        Handler h = cbHandler;
+        if (h == null || codec == null) return;
+        h.post(() -> {
+            if (released || codec == null) return;
+            Surface cur = surface;
+            if (cur == null || !cur.isValid()) return;
+            if (!recovering) {
+                try {
+                    codec.setOutputSurface(cur);
+                    recoverRetries = 0;
+                    Log.i(TAG, "output surface swapped (no reset)");
+                    return;
+                } catch (Exception e) {
+                    Log.w(TAG, "setOutputSurface failed (" + e.getMessage()
+                            + ") — full reset onto new surface");
+                }
+            }
+            // Codec was already errored/wedged on the dead surface: rebuild it
+            // onto the new one. recover() re-reads `surface`, now valid.
+            recovering = true;
+            recover();
+        });
     }
 
     /**

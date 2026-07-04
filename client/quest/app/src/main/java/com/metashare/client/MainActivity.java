@@ -134,6 +134,10 @@ public final class MainActivity extends Activity
         if (session == null) {
             session = new StreamSession(this, surfaceView, 0, this);
             session.start();
+        } else {
+            // Surface recreated while the session kept running: rebind the live
+            // decoder to it, otherwise it stays on the destroyed surface and wedges.
+            session.setRenderer(surfaceView);
         }
     }
 

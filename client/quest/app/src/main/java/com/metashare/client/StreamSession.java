@@ -71,6 +71,9 @@ public final class StreamSession {
     private Thread worker;
     private DatagramSocket discoverySocket;
     private Socket signalingSocket;
+    // The current session's video decoder, exposed so setRenderer() can rebind
+    // it to a recreated surface without tearing the session (and RTP) down.
+    private volatile VideoDecoder videoDecoder;
 
     public StreamSession(Context context, SurfaceView surfaceView,
                          int monitorIndex, Listener listener) {
@@ -80,9 +83,20 @@ public final class StreamSession {
         this.listener = listener;
     }
 
-    /** Swap the render target after a surface recreation. */
+    /**
+     * Swap the render target after a surface recreation. The Quest destroys and
+     * recreates a SurfaceView's surface during normal panel churn; the old
+     * Surface then goes invalid and the codec bound to it errors. Rebind the live
+     * decoder onto the new surface so the session (and its RTP link) keep running
+     * instead of the decoder wedging on a dead surface.
+     */
     public void setRenderer(SurfaceView surfaceView) {
         this.surfaceView = surfaceView;
+        VideoDecoder d = videoDecoder;
+        if (d != null && surfaceView != null) {
+            Surface s = surfaceView.getHolder().getSurface();
+            if (s != null && s.isValid()) d.setSurface(s);
+        }
     }
 
     public synchronized void start() {
@@ -265,6 +279,7 @@ public final class StreamSession {
         // 2. Set up decoders.
         final SurfaceView sv = surfaceView;
         final VideoDecoder videoDecoder = new VideoDecoder();
+        this.videoDecoder = videoDecoder;  // publish so setRenderer() can rebind
         VideoDecoder.Listener vListener = new VideoDecoder.Listener() {
             @Override public void onFirstFrameRendered() {
                 postStatus("");  // hide the status overlay
@@ -347,6 +362,7 @@ public final class StreamSession {
             }
         } finally {
             try { rtp.stop(); } catch (Exception ignored) {}
+            this.videoDecoder = null;  // stop setRenderer() touching a dead decoder
             try { videoDecoder.release(); } catch (Exception ignored) {}
             if (audioDecoder != null) {
                 try { audioDecoder.release(); } catch (Exception ignored) {}

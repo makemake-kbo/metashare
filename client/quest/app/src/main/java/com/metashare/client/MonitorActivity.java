@@ -110,6 +110,11 @@ public final class MonitorActivity extends Activity
         if (session == null) {
             session = new StreamSession(this, surfaceView, monitorIndex, this);
             session.start();
+        } else {
+            // Session already running (surfaceDestroyed left it alive): the
+            // surface was recreated, so rebind the live decoder to it. Without
+            // this the decoder stays bound to the destroyed surface and wedges.
+            session.setRenderer(surfaceView);
         }
     }
 
