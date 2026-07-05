@@ -67,7 +67,9 @@ struct Options {
 #endif
     int width = 1920;
     int height = 1080;
-    int fps = 60;
+    // Default matches the Quest's 72 Hz refresh so the client's composite-to-
+    // vsync step lands on a whole frame instead of beating against a 60 Hz grid.
+    int fps = 72;
     // Ceiling for the loss-based bitrate controller. 8 Mbps is comfortable
     // for 1080p60 HEVC and leaves WiFi headroom for multiple monitors.
     int bitrate_kbps = 8000;
@@ -117,7 +119,7 @@ void usage(const char* argv0) {
         "  --monitors <n>          number of monitors (default 1)\n"
         "  --width <px>            virtual-monitor width (default 1920)\n"
         "  --height <px>           virtual-monitor height (default 1080)\n"
-        "  --fps <n>              frame rate (default 60)\n"
+        "  --fps <n>              frame rate (default 72)\n"
         "  --bitrate <kbps>       max encoder bitrate; adapts down under "
         "loss\n"
         "                         (default 8000)\n"
@@ -666,13 +668,6 @@ int main(int argc, char** argv) {
             // PTS, which also keeps the link alive and lets a PLI-forced
             // keyframe land within one interval on an otherwise idle monitor.
 
-            // TEMP DIAG (jitter investigation): per-second stats of the enc_pts
-            // deltas actually handed to the encoder. Even deltas (~period_usec)
-            // and n≈fps = a smooth playout clock; a wide min/max spread or n<fps
-            // = the PTS cadence is still bursty. Remove once settled.
-            std::int64_t d_prev = 0, d_min = 0, d_max = 0, d_sum = 0, d_cnt = 0;
-            auto d_last = std::chrono::steady_clock::now();
-
             while (raw->running && !g_stop) {
                 std::this_thread::sleep_until(next_tick);
                 next_tick += period;
@@ -705,28 +700,6 @@ int main(int argc, char** argv) {
                 std::int64_t enc_pts = tick * period_usec;
                 if (enc_pts <= last_pts) enc_pts = last_pts + period_usec;
                 last_pts = enc_pts;
-
-                if (d_prev != 0) {
-                    const std::int64_t d = enc_pts - d_prev;
-                    if (d_cnt == 0 || d < d_min) d_min = d;
-                    if (d_cnt == 0 || d > d_max) d_max = d;
-                    d_sum += d;
-                    ++d_cnt;
-                }
-                d_prev = enc_pts;
-                if (now - d_last >= std::chrono::seconds(1)) {
-                    std::fprintf(stderr,
-                                 "[monitor %d] pts-delta 1s: n=%lld min=%lldus "
-                                 "max=%lldus mean=%lldus (target %lld)\n",
-                                 raw->index, static_cast<long long>(d_cnt),
-                                 static_cast<long long>(d_min),
-                                 static_cast<long long>(d_max),
-                                 static_cast<long long>(d_cnt ? d_sum / d_cnt
-                                                              : 0),
-                                 static_cast<long long>(period_usec));
-                    d_min = d_max = d_sum = d_cnt = 0;
-                    d_last = now;
-                }
 
                 if (!raw->encoder->encode(last, enc_pts, sink, thread_err)) {
                     std::fprintf(stderr, "[monitor %d] encode error: %s\n",
