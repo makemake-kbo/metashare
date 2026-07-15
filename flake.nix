@@ -7,7 +7,16 @@
   };
 
   outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+    # System-independent outputs (the Home Manager module) merged with the
+    # per-system packages/apps/devShells.
+    {
+      # Usage in a flake-based Home Manager config:
+      #   imports = [ inputs.metashare.homeManagerModules.default ];
+      #   programs.metashare.enable = true;
+      homeManagerModules.default = import ./nix/hm-module.nix;
+      homeManagerModules.metashare = self.homeManagerModules.default;
+    }
+    // flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
 
@@ -37,29 +46,10 @@
           glib                # for gappsWrapperArgs / makeSchemaParser
         ];
 
-        metashare = pkgs.stdenv.mkDerivation {
-          pname = "metashare";
-          version = "0.1.0";
-          src = ./.;
-
-          nativeBuildInputs = nativeDeps;
-          buildInputs = runtimeDeps;
-
-          # Real Wayland capture is the whole point of the app — require it.
-          mesonFlags = [
-            "-Dportal=enabled"
-          ];
-
-          # The GTK frontend spawns `metashare-streamer` via $PATH lookup.
-          # When launched from a GNOME .desktop entry, $out/bin is *not* on
-          # PATH, so inject it into the wrapper for every wrapped binary.
-          preFixup = ''
-            gappsWrapperArgs+=(--prefix PATH : "$out/bin")
-          '';
-
-          # Take the bare desktop file through the standard install path.
-          # Meson already installs it to share/applications/.
-        };
+        # The package definition lives in ./nix/package.nix so it can also be
+        # consumed from a channel-based (non-flake) config via callPackage and
+        # from the Home Manager module (./nix/hm-module.nix).
+        metashare = pkgs.callPackage ./nix/package.nix { };
 
         # Flake-driven Flatpak build. The flatpak-builder manifests under
         # ./flatpak are the source of truth (portable: they build metashare from
