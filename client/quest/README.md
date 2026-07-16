@@ -64,12 +64,20 @@ StreamSession (background thread)
 
 RemoteInputController
     pointer: controller/touch/mouse -> normalized screen coordinates
-    keyboard: Android IME -> transport-neutral text/key callbacks
+    keyboard: Android IME -> committed text + discrete keys (as X11 keysyms)
+SessionInputForwarder
+    pointer actions -> evdev button transitions + moves + scroll steps
+    text/keys -> keysym press/release pairs
+    -> StreamSession INPUT lines on the signaling TCP link
 ```
 
-Pointer and keyboard events currently stop at transport-neutral callbacks; the
-views and Quest system keyboard are ready, but a host input protocol and input
-injection backend are still required before events can control the host.
+Remote input is live end-to-end: each screen's pointer/keyboard events ride
+its own signaling connection as `INPUT` lines, and the streamer injects them
+into that monitor's capture session via the `org.freedesktop.portal.RemoteDesktop`
+portal (the permission dialog on the host asks for screen + input once). If
+the host was started with `--no-input`, or its portal lacks RemoteDesktop,
+events are silently dropped and the stream is view-only. The toolbar's pointer
+toggle gates pointer capture on the client side.
 
 No third-party media dependency is required — everything uses the Android
 framework (`MediaCodec`, `AudioTrack`, `DatagramSocket`, `Surface`).

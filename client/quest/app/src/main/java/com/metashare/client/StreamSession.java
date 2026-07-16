@@ -26,7 +26,9 @@ import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.Collections;
+import java.util.Locale;
 
 /**
  * Streams one monitor from a MetaShare streamer over raw RTP (H.265/H.264 video
@@ -76,6 +78,13 @@ public final class StreamSession {
     // it to a recreated surface without tearing the session (and RTP) down.
     private volatile VideoDecoder videoDecoder;
 
+    // Remote-input back-channel: UI threads enqueue wire lines here and a
+    // per-session sender thread writes them to the signaling socket, so a
+    // stalled link can never jank the UI. Guarded by its own monitor.
+    private final ArrayDeque<String> inputQueue = new ArrayDeque<>();
+    private volatile boolean inputOpen;
+    private static final int INPUT_QUEUE_CAP = 512;
+
     public StreamSession(Context context, SurfaceView surfaceView,
                          int monitorIndex, Listener listener) {
         this.context = context;
@@ -114,6 +123,44 @@ public final class StreamSession {
         if (worker != null) {
             worker.interrupt();
             worker = null;
+        }
+    }
+
+    // ---------------------------------------------------------- remote input
+
+    /** Absolute pointer position, normalized 0..1 in the streamed surface. */
+    public void sendPointerMove(float x, float y) {
+        enqueueInput(String.format(Locale.US, "m %.4f %.4f", x, y));
+    }
+
+    /** Pointer button by Linux evdev code (BTN_LEFT=272/RIGHT=273/MIDDLE=274). */
+    public void sendPointerButton(int evdevButton, boolean pressed) {
+        enqueueInput("b " + evdevButton + (pressed ? " 1" : " 0"));
+    }
+
+    /** Discrete scroll steps; positive = down / right. */
+    public void sendScroll(int vSteps, int hSteps) {
+        enqueueInput("s " + vSteps + " " + hSteps);
+    }
+
+    /** One key transition as an X11 keysym (see {@link Keysyms}). */
+    public void sendKey(int keysym, boolean pressed) {
+        enqueueInput("k " + keysym + (pressed ? " 1" : " 0"));
+    }
+
+    private void enqueueInput(String body) {
+        if (!inputOpen) return;  // dropped until the stream is up
+        String line = "INPUT " + body;
+        synchronized (inputQueue) {
+            // Coalesce bursts of pointer moves: only the newest position
+            // matters, and this keeps a slow link from queueing stale motion.
+            if (body.charAt(0) == 'm' && !inputQueue.isEmpty()
+                    && inputQueue.peekLast().startsWith("INPUT m ")) {
+                inputQueue.pollLast();
+            }
+            inputQueue.addLast(line);
+            if (inputQueue.size() > INPUT_QUEUE_CAP) inputQueue.pollFirst();
+            inputQueue.notifyAll();
         }
     }
 
@@ -347,6 +394,29 @@ public final class StreamSession {
         // the encoder's full keyframe interval for the first IDR.
         rtp.requestKeyframe();
 
+        // Input sender: drains pointer/keyboard lines onto the signaling
+        // socket from its own thread. Shares the socket with the keepalive
+        // PING below, so both writers go through writeLock.
+        final Object writeLock = new Object();
+        synchronized (inputQueue) { inputQueue.clear(); }
+        inputOpen = true;
+        Thread inputSender = new Thread(() -> {
+            try {
+                while (inputOpen) {
+                    String line;
+                    synchronized (inputQueue) {
+                        while (inputQueue.isEmpty() && inputOpen) inputQueue.wait();
+                        if (!inputOpen) return;
+                        line = inputQueue.pollFirst();
+                    }
+                    synchronized (writeLock) { sendLine(sigOut, line); }
+                }
+            } catch (InterruptedException | IOException ignored) {
+                // A dead socket surfaces in the read loop below; just exit.
+            }
+        }, "MetaShareInput");
+        inputSender.start();
+
         // 5. Block until BYE / disconnect. Media flows on the RTP thread.
         // Keepalive: ping the streamer every read-timeout so it can tell a
         // live-but-idle client from a vanished one (its recv times out at 10s).
@@ -357,13 +427,21 @@ public final class StreamSession {
                 try {
                     line = sigIn.readLine();
                 } catch (SocketTimeoutException idle) {
-                    sendLine(sigOut, "PING");  // throws when the link is dead
+                    synchronized (writeLock) {
+                        sendLine(sigOut, "PING");  // throws when the link is dead
+                    }
                     continue;
                 }
                 if (line == null) break;
                 if (line.equals("BYE")) break;
             }
         } finally {
+            inputOpen = false;
+            synchronized (inputQueue) {
+                inputQueue.clear();
+                inputQueue.notifyAll();
+            }
+            inputSender.interrupt();
             try { rtp.stop(); } catch (Exception ignored) {}
             this.videoDecoder = null;  // stop setRenderer() touching a dead decoder
             try { videoDecoder.release(); } catch (Exception ignored) {}

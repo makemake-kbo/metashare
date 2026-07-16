@@ -19,6 +19,8 @@ extern "C" {
 
 namespace metashare {
 
+class InputSink;
+
 struct SourceFormat {
     int width = 0;
     int height = 0;
@@ -59,6 +61,11 @@ class FrameSource {
     virtual int latest_frame(AVFrame** out, std::int64_t& pts_usec) {
         return next_frame(out, pts_usec);
     }
+
+    // Input-injection back-channel, or nullptr when this backend can't inject
+    // remote input into the captured desktop. Valid after a successful
+    // start(); the returned sink is owned by the source.
+    virtual InputSink* input_sink() { return nullptr; }
 };
 
 }  // namespace metashare

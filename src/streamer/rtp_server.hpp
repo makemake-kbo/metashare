@@ -23,6 +23,7 @@
 
 #include <netinet/in.h>
 
+#include "input_event.hpp"
 #include "pacer.hpp"
 #include "protocol.hpp"
 #include "rtp_packetizer.hpp"
@@ -85,6 +86,11 @@ class RtpServer {
     // Fired (from the RTCP thread, ~1/s) with the video fraction-lost from
     // the client's Receiver Reports, 0.0..1.0. Drives bitrate adaptation.
     std::function<void(float)> on_loss_report;
+
+    // Fired (from the signaling thread) for each decoded INPUT event from the
+    // client. Left unset when the pipeline's source has no input backend, in
+    // which case client input is silently dropped.
+    std::function<void(const input::Event&)> on_input;
 
   private:
     void on_connect(const sockaddr_in& peer);

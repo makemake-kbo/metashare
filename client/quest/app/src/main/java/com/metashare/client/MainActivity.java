@@ -31,6 +31,7 @@ public final class MainActivity extends Activity
     private StreamSession session;
     private QuestToolbar toolbar;
     private RemoteInputController inputController;
+    private final SessionInputForwarder inputForwarder = new SessionInputForwarder();
     private volatile int streamWidth;
     private volatile int streamHeight;
 
@@ -60,25 +61,10 @@ public final class MainActivity extends Activity
         statusParams.setMargins(18, 18, 18, 18);
         root.addView(statusView, statusParams);
 
+        // Captured pointer/keyboard events flow through the forwarder onto the
+        // session's signaling link once the stream is up.
         inputController = new RemoteInputController(this, root, surfaceView,
-                new RemoteInputController.Listener() {
-                    @Override
-                    public void onPointerInput(RemoteInputController.PointerEvent event) {
-                        handlePointerInput(event);
-                    }
-
-                    @Override
-                    public void onTextInput(String text) {
-                        // Deliberately do not log content; this callback is the
-                        // future input transport boundary.
-                        Log.d(TAG, "captured " + text.length() + " keyboard character(s)");
-                    }
-
-                    @Override
-                    public void onKeyInput(int keyCode, boolean pressed) {
-                        Log.v(TAG, "key " + keyCode + (pressed ? " down" : " up"));
-                    }
-                });
+                inputForwarder);
 
         toolbar = new QuestToolbar(this, root,
                 new QuestToolbar.Callbacks() {
@@ -145,6 +131,7 @@ public final class MainActivity extends Activity
         // ready Surface on first negotiate.
         if (session == null) {
             session = new StreamSession(this, surfaceView, 0, this);
+            inputForwarder.setSession(session);
             session.start();
         } else {
             // Surface recreated while the session kept running: rebind the live
@@ -164,6 +151,7 @@ public final class MainActivity extends Activity
 
     @Override
     protected void onDestroy() {
+        inputForwarder.setSession(null);
         if (session != null) { session.stop(); session = null; }
         if (inputController != null) inputController.release();
         launchedSecondaries.clear();
@@ -215,14 +203,5 @@ public final class MainActivity extends Activity
     private void setStatus(String text) {
         if (text == null || text.isEmpty()) statusView.setVisibility(View.GONE);
         else { statusView.setVisibility(View.VISIBLE); statusView.setText(text); }
-    }
-
-    private void handlePointerInput(RemoteInputController.PointerEvent event) {
-        // Keep motion quiet in logcat; down/up are useful while the input
-        // transport is being connected later.
-        if (event.action == android.view.MotionEvent.ACTION_DOWN
-                || event.action == android.view.MotionEvent.ACTION_UP) {
-            Log.d(TAG, "pointer " + event.action + " at " + event.x + "," + event.y);
-        }
     }
 }

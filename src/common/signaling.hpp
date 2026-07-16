@@ -10,6 +10,9 @@
 //                  (codec, resolution, fps, SSRCs, payload types, clock rates)
 //   READY <json>   client -> server: {"port": <client UDP port>}
 //   START                       server -> client: RTP streaming begins
+//   INPUT <body>   client -> server: one remote-input event (pointer/keyboard;
+//                  body format in src/common/input_event.hpp). Optional —
+//                  servers without an input backend ignore these.
 //   BYE                         either side: clean shutdown
 //
 // One UDP port carries both video and audio, demultiplexed by SSRC.
@@ -29,11 +32,11 @@ inline constexpr std::uint16_t kDefaultSignalingPort = 7778;
 // One decoded signaling message. PING is a client->server keepalive so the
 // server can distinguish an idle-but-alive client from a vanished one (and
 // free the single per-monitor slot for reconnection).
-enum class Type { kHello, kReady, kStart, kBye, kPing };
+enum class Type { kHello, kReady, kStart, kBye, kPing, kInput };
 
 struct Message {
     Type type;
-    // JSON body for HELLO/READY; empty for START/BYE.
+    // JSON body for HELLO/READY, event body for INPUT; empty for START/BYE.
     std::string body;
 };
 

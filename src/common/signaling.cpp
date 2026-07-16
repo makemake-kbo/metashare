@@ -11,6 +11,7 @@ std::string serialize(const Message& m) {
     switch (m.type) {
     case Type::kHello: os << "HELLO " << m.body; break;
     case Type::kReady: os << "READY " << m.body; break;
+    case Type::kInput: os << "INPUT " << m.body; break;
     case Type::kStart: return "START";
     case Type::kBye: return "BYE";
     case Type::kPing: return "PING";
@@ -48,6 +49,11 @@ bool parse(std::string_view line, Message& out) {
     }
     if (cmd == "READY") {
         out.type = Type::kReady;
+        out.body = std::string(rest);
+        return true;
+    }
+    if (cmd == "INPUT") {
+        out.type = Type::kInput;
         out.body = std::string(rest);
         return true;
     }

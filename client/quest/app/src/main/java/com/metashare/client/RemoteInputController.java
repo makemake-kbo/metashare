@@ -44,8 +44,10 @@ final class RemoteInputController {
 
     interface Listener {
         void onPointerInput(PointerEvent event);
+        /** Committed IME text (never sees Ctrl/Alt chords or navigation keys). */
         void onTextInput(String text);
-        void onKeyInput(int keyCode, boolean pressed);
+        /** A discrete key as an X11 keysym (see {@link Keysyms}). */
+        void onKeyInput(int keysym, boolean pressed);
     }
 
     private final Activity activity;
@@ -84,16 +86,35 @@ final class RemoteInputController {
                     listener.onTextInput(s.subSequence(start, start + count).toString());
                 }
                 for (int i = count; i < before; i++) {
-                    listener.onKeyInput(KeyEvent.KEYCODE_DEL, true);
-                    listener.onKeyInput(KeyEvent.KEYCODE_DEL, false);
+                    // Deletions in the shadow buffer become remote backspaces.
+                    listener.onKeyInput(0xff08 /* XK_BackSpace */, true);
+                    listener.onKeyInput(0xff08, false);
                 }
             }
 
             @Override public void afterTextChanged(Editable editable) {}
         });
         keyboardTarget.setOnKeyListener((view, keyCode, event) -> {
-            listener.onKeyInput(keyCode, event.getAction() == KeyEvent.ACTION_DOWN);
-            return false;
+            // Two disjoint paths: printable hardware keys fall through so the
+            // editor commits them and the text watcher forwards the text;
+            // navigation/editing/modifier keys and Ctrl/Alt/Meta chords are
+            // forwarded here as discrete keysyms and consumed, so the editor
+            // never also edits the buffer (which would double-send them via
+            // the watcher). Soft-IME input never reaches this listener.
+            int action = event.getAction();
+            if (action != KeyEvent.ACTION_DOWN && action != KeyEvent.ACTION_UP) {
+                return false;
+            }
+            boolean pressed = action == KeyEvent.ACTION_DOWN;
+            int keysym = Keysyms.special(keyCode);
+            if (keysym == 0 && (event.getMetaState()
+                    & (KeyEvent.META_CTRL_ON | KeyEvent.META_ALT_ON
+                       | KeyEvent.META_META_ON)) != 0) {
+                keysym = Keysyms.chorded(event);
+            }
+            if (keysym == 0) return false;
+            listener.onKeyInput(keysym, pressed);
+            return true;
         });
         FrameLayout.LayoutParams keyboardParams = new FrameLayout.LayoutParams(2, 2);
         keyboardParams.leftMargin = 1;

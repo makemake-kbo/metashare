@@ -12,6 +12,7 @@
 #include <random>
 #include <sys/stat.h>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <sdbus-c++/sdbus-c++.h>
@@ -40,6 +41,9 @@ namespace metashare {
 
 struct PortalState {
     std::unique_ptr<sdbus::IConnection> conn;
+    // Kept alive for the session's lifetime so remote-input Notify* calls can
+    // reuse it (creating a proxy per pointer move would be absurd).
+    std::unique_ptr<sdbus::IProxy> portal;
     std::string session_handle;
 };
 
@@ -48,6 +52,8 @@ namespace {
 constexpr const char* kPortalService = "org.freedesktop.portal.Desktop";
 constexpr const char* kPortalPath = "/org/freedesktop/portal/desktop";
 constexpr const char* kScreenCastIface = "org.freedesktop.portal.ScreenCast";
+constexpr const char* kRemoteDesktopIface =
+    "org.freedesktop.portal.RemoteDesktop";
 constexpr const char* kRequestIface = "org.freedesktop.portal.Request";
 
 std::string random_token(const char* prefix) {
@@ -123,6 +129,31 @@ bool portal_request(sdbus::IConnection& conn, const std::string& unique_name,
 
 bool PortalPipeWireSource::run_portal(int& pw_fd, std::uint32_t& node_id,
                                       std::string& err) {
+    if (opts_.enable_input) {
+        // Try the combined RemoteDesktop+ScreenCast session first — same
+        // capture, plus input injection. Portals without RemoteDesktop (or a
+        // user denying the extra permission) drop us to capture-only below.
+        std::string input_err;
+        if (run_portal_session(true, pw_fd, node_id, input_err)) {
+            input_ready_ = true;
+            std::fprintf(stderr,
+                         "[portal] remote input enabled (RemoteDesktop "
+                         "session, stream node %u)\n",
+                         node_id);
+            return true;
+        }
+        std::fprintf(stderr,
+                     "[portal] RemoteDesktop session unavailable (%s) — "
+                     "falling back to capture-only\n",
+                     input_err.c_str());
+        portal_.reset();
+    }
+    return run_portal_session(false, pw_fd, node_id, err);
+}
+
+bool PortalPipeWireSource::run_portal_session(bool with_input, int& pw_fd,
+                                              std::uint32_t& node_id,
+                                              std::string& err) {
     portal_ = std::make_unique<PortalState>();
 
     // The portal source requires a D-Bus session bus (it talks to
@@ -158,8 +189,14 @@ bool PortalPipeWireSource::run_portal(int& pw_fd, std::uint32_t& node_id,
     sdbus::IConnection& conn = *portal_->conn;
     const std::string unique = conn.getUniqueName();
 
-    auto portal = sdbus::createProxy(conn, std::string{kPortalService},
-                                     std::string{kPortalPath});
+    portal_->portal = sdbus::createProxy(conn, std::string{kPortalService},
+                                         std::string{kPortalPath});
+    auto& portal = portal_->portal;
+
+    // Combined sessions are created (and started) through the RemoteDesktop
+    // interface; ScreenCast methods then operate on the same session handle.
+    const char* session_iface =
+        with_input ? kRemoteDesktopIface : kScreenCastIface;
 
     // 1) CreateSession
     {
@@ -169,7 +206,7 @@ bool PortalPipeWireSource::run_portal(int& pw_fd, std::uint32_t& node_id,
         auto call = [&](VarMap& options) {
             sdbus::ObjectPath handle;
             portal->callMethod("CreateSession")
-                .onInterface(kScreenCastIface)
+                .onInterface(session_iface)
                 .withArguments(options)
                 .storeResultsTo(handle);
         };
@@ -183,6 +220,21 @@ bool PortalPipeWireSource::run_portal(int& pw_fd, std::uint32_t& node_id,
     }
 
     const sdbus::ObjectPath session{portal_->session_handle};
+
+    // 1b) SelectDevices — ask for keyboard (1) + pointer (2) injection.
+    if (with_input) {
+        VarMap opts;
+        opts["types"] = sdbus::Variant(std::uint32_t{3});
+        VarMap res;
+        auto call = [&](VarMap& options) {
+            sdbus::ObjectPath handle;
+            portal->callMethod("SelectDevices")
+                .onInterface(kRemoteDesktopIface)
+                .withArguments(session, options)
+                .storeResultsTo(handle);
+        };
+        if (!portal_request(conn, unique, opts, call, res, err)) return false;
+    }
 
     // 2) SelectSources — configurable via opts_. Default is MONITOR + single +
     // METADATA cursor (so the cursor comes as PipeWire stream metadata, not
@@ -206,14 +258,16 @@ bool PortalPipeWireSource::run_portal(int& pw_fd, std::uint32_t& node_id,
         if (!portal_request(conn, unique, opts, call, res, err)) return false;
     }
 
-    // 3) Start — shows the picker dialog; user chooses a monitor.
+    // 3) Start — shows the picker dialog; user chooses a monitor. On a
+    // combined session Start must go through RemoteDesktop; the response
+    // still carries the ScreenCast streams.
     VarMap start_res;
     {
         VarMap opts;
         auto call = [&](VarMap& options) {
             sdbus::ObjectPath handle;
             portal->callMethod("Start")
-                .onInterface(kScreenCastIface)
+                .onInterface(session_iface)
                 .withArguments(session, std::string{""}, options)
                 .storeResultsTo(handle);
         };
@@ -235,6 +289,7 @@ bool PortalPipeWireSource::run_portal(int& pw_fd, std::uint32_t& node_id,
             return false;
         }
         node_id = std::get<0>(streams[0]);
+        node_id_ = node_id;  // absolute pointer moves target this stream
     }
 
     // 4) OpenPipeWireRemote -> file descriptor.
@@ -257,6 +312,92 @@ bool PortalPipeWireSource::run_portal(int& pw_fd, std::uint32_t& node_id,
         }
     }
     return true;
+}
+
+// ===========================================================================
+//  Remote-input injection (org.freedesktop.portal.RemoteDesktop)
+// ===========================================================================
+//
+// Called from the signaling thread while the D-Bus event loop runs async —
+// the same pattern the portal negotiation above already relies on. Notify*
+// methods return nothing, so dontExpectReply() keeps them fire-and-forget.
+
+InputSink* PortalPipeWireSource::input_sink() {
+    return input_ready_ ? static_cast<InputSink*>(this) : nullptr;
+}
+
+void PortalPipeWireSource::input_error(const char* what) {
+    const int n = input_errors_.fetch_add(1) + 1;
+    if (n == 1)
+        std::fprintf(stderr, "[portal] input injection error: %s\n", what);
+    if (n == 16) {
+        std::fprintf(stderr,
+                     "[portal] repeated injection errors — remote input "
+                     "disabled\n");
+        input_ready_ = false;
+    }
+}
+
+void PortalPipeWireSource::pointer_motion(double nx, double ny) {
+    int w = 0, h = 0;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        w = fmt_.width;
+        h = fmt_.height;
+    }
+    if (w <= 0 || h <= 0) return;
+    std::lock_guard<std::mutex> lk(input_mu_);
+    if (!input_ready_ || !portal_ || !portal_->portal) return;
+    try {
+        portal_->portal->callMethod("NotifyPointerMotionAbsolute")
+            .onInterface(kRemoteDesktopIface)
+            .withArguments(sdbus::ObjectPath{portal_->session_handle}, VarMap{},
+                           node_id_, nx * w, ny * h)
+            .dontExpectReply();
+    } catch (const sdbus::Error& e) { input_error(e.what()); }
+}
+
+void PortalPipeWireSource::pointer_button(int evdev_button, bool pressed) {
+    std::lock_guard<std::mutex> lk(input_mu_);
+    if (!input_ready_ || !portal_ || !portal_->portal) return;
+    try {
+        portal_->portal->callMethod("NotifyPointerButton")
+            .onInterface(kRemoteDesktopIface)
+            .withArguments(sdbus::ObjectPath{portal_->session_handle}, VarMap{},
+                           static_cast<std::int32_t>(evdev_button),
+                           std::uint32_t{pressed ? 1u : 0u})
+            .dontExpectReply();
+    } catch (const sdbus::Error& e) { input_error(e.what()); }
+}
+
+void PortalPipeWireSource::pointer_scroll(int v_steps, int h_steps) {
+    std::lock_guard<std::mutex> lk(input_mu_);
+    if (!input_ready_ || !portal_ || !portal_->portal) return;
+    // axis: 0 = vertical, 1 = horizontal; steps positive = down / right.
+    const std::pair<std::uint32_t, int> axes[] = {{0u, v_steps}, {1u, h_steps}};
+    for (const auto& [axis, steps] : axes) {
+        if (steps == 0) continue;
+        try {
+            portal_->portal->callMethod("NotifyPointerAxisDiscrete")
+                .onInterface(kRemoteDesktopIface)
+                .withArguments(sdbus::ObjectPath{portal_->session_handle},
+                               VarMap{}, axis, static_cast<std::int32_t>(steps))
+                .dontExpectReply();
+        } catch (const sdbus::Error& e) { input_error(e.what()); }
+    }
+}
+
+void PortalPipeWireSource::key(std::uint32_t keysym, bool pressed) {
+    std::lock_guard<std::mutex> lk(input_mu_);
+    if (!input_ready_ || !portal_ || !portal_->portal) return;
+    try {
+        portal_->portal->callMethod("NotifyKeyboardKeysym")
+            .onInterface(kRemoteDesktopIface)
+            .withArguments(sdbus::ObjectPath{portal_->session_handle}, VarMap{},
+                           static_cast<std::int32_t>(keysym),
+                           std::uint32_t{pressed ? 1u : 0u})
+            .dontExpectReply();
+    } catch (const sdbus::Error& e) { input_error(e.what()); }
 }
 
 // ===========================================================================
@@ -512,10 +653,16 @@ void PortalPipeWireSource::stop() {
         loop_ = nullptr;
     }
 
-    std::lock_guard<std::mutex> lk(mu_);
-    if (front_) av_frame_free(&front_);
-    if (back_) av_frame_free(&back_);
-    if (out_) av_frame_free(&out_);
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (front_) av_frame_free(&front_);
+        if (back_) av_frame_free(&back_);
+        if (out_) av_frame_free(&out_);
+    }
+    // Injection (signaling thread) uses the proxy under input_mu_; taking it
+    // here makes teardown safe regardless of pipeline stop order.
+    std::lock_guard<std::mutex> ilk(input_mu_);
+    input_ready_ = false;
     portal_.reset();  // closes the D-Bus connection + session
 }
 

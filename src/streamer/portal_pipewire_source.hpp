@@ -1,10 +1,17 @@
-// Real Wayland capture.
+// Real Wayland capture (and, optionally, remote-input injection).
 //
 //   1. xdg-desktop-portal ScreenCast (D-Bus): CreateSession -> SelectSources ->
 //      Start -> OpenPipeWireRemote. The user picks a monitor/window in the
 //      portal dialog once; we get back a PipeWire fd + node id.
 //   2. PipeWire: connect to that fd, attach a stream to the node, and receive
 //      raw frames (negotiated to a packed RGB/BGR format via shared memory).
+//
+// When PortalOptions::enable_input is set, the session is created through the
+// org.freedesktop.portal.RemoteDesktop interface instead (with ScreenCast
+// combined onto the same session), which additionally lets us inject pointer
+// and keyboard events into the captured surface (InputSink). If the desktop's
+// portal can't do that, we transparently fall back to a capture-only
+// ScreenCast session and input_sink() stays nullptr.
 //
 // Frames are copied into an AVFrame and handed to the encoder. Only shared-
 // memory (MemPtr) buffers are negotiated for now; DMA-BUF zero-copy import is
@@ -23,6 +30,7 @@
 #include <string>
 
 #include "frame_source.hpp"
+#include "input_sink.hpp"
 
 #include <spa/utils/hook.h>
 
@@ -51,9 +59,12 @@ struct PortalOptions {
     std::uint32_t source_types = 1;  // MONITOR by default
     bool multiple = false;
     std::uint32_t cursor_mode = 2;  // METADATA (cursor as PipeWire metadata)
+    // Request a RemoteDesktop session (pointer+keyboard injection). Falls back
+    // to a plain capture-only ScreenCast session if the portal refuses.
+    bool enable_input = false;
 };
 
-class PortalPipeWireSource final : public FrameSource {
+class PortalPipeWireSource final : public FrameSource, public InputSink {
   public:
     explicit PortalPipeWireSource(int fps_hint);
     explicit PortalPipeWireSource(const PortalOptions& opts);
@@ -65,14 +76,32 @@ class PortalPipeWireSource final : public FrameSource {
     int next_frame(AVFrame** out, std::int64_t& pts_usec) override;
     int latest_frame(AVFrame** out, std::int64_t& pts_usec) override;
 
+    // Non-null once a RemoteDesktop session was granted; the sink injects into
+    // exactly the surface this source captures.
+    InputSink* input_sink() override;
+
+    // --- InputSink (safe from the signaling thread; fire-and-forget) --------
+    void pointer_motion(double nx, double ny) override;
+    void pointer_button(int evdev_button, bool pressed) override;
+    void pointer_scroll(int v_steps, int h_steps) override;
+    void key(std::uint32_t keysym, bool pressed) override;
+
     // --- called from the PipeWire thread (public so C callbacks can reach) ---
     void on_param_changed(const struct spa_pod* param);
     void on_process();
 
   private:
-    // Drives the xdg-desktop-portal ScreenCast dialog; returns a PipeWire fd
-    // (owned by caller) and the node id to attach to.
+    // Drives the xdg-desktop-portal dialog; returns a PipeWire fd (owned by
+    // caller) and the node id to attach to. Tries a RemoteDesktop session
+    // first when opts_.enable_input, falling back to capture-only ScreenCast.
     bool run_portal(int& pw_fd, std::uint32_t& node_id, std::string& err);
+    // One portal session negotiation, either combined RemoteDesktop+ScreenCast
+    // (with_input) or plain ScreenCast.
+    bool run_portal_session(bool with_input, int& pw_fd, std::uint32_t& node_id,
+                            std::string& err);
+
+    // Count injection failures; disables remote input after repeated errors.
+    void input_error(const char* what);
 
     // Copy the current front_ into the consumer-owned out_ and hand it back.
     // Caller must hold mu_. Returns 1 on success, 0 if there is nothing to
@@ -108,6 +137,14 @@ class PortalPipeWireSource final : public FrameSource {
     bool have_new_ = false;
     std::atomic<bool> running_{false};
     std::int64_t pts_usec_ = 0;
+
+    // Remote-input state. input_mu_ guards the portal proxy against teardown
+    // racing an injection from the signaling thread (never take mu_ while
+    // holding it). node_id_ is the stream targeted by absolute pointer moves.
+    std::mutex input_mu_;
+    std::atomic<bool> input_ready_{false};
+    std::uint32_t node_id_ = 0;
+    std::atomic<int> input_errors_{0};
 };
 
 }  // namespace metashare

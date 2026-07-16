@@ -197,6 +197,11 @@ void RtpServer::on_message(const signal::Message& m) {
         std::fprintf(stderr, "[rtp] client ready -> udp %s:%u\n", ip, port);
         if (!signaling_.send({signal::Type::kStart, ""}))
             std::fprintf(stderr, "[rtp] failed to send START\n");
+    } else if (m.type == signal::Type::kInput) {
+        if (on_input) {
+            input::Event e;
+            if (input::parse(m.body, e)) on_input(e);
+        }
     } else if (m.type == signal::Type::kBye) {
         std::lock_guard<std::mutex> lk(peer_mu_);
         peer_streaming_ = false;

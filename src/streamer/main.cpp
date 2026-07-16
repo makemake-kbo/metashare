@@ -26,6 +26,8 @@ extern "C" {
 #include "discovery.hpp"
 #include "encoder.hpp"
 #include "frame_source.hpp"
+#include "input_event.hpp"
+#include "input_sink.hpp"
 #include "pacer.hpp"
 #include "rtp_server.hpp"
 #include "signaling.hpp"
@@ -85,6 +87,10 @@ struct Options {
     // the test pattern source); empty when the audio TU isn't linked.
     std::string audio = "";
     int audio_bitrate_kbps = 96;
+    // Remote input (Quest pointer/keyboard -> host). Portal capture sessions
+    // are then created via the RemoteDesktop portal; if the desktop refuses,
+    // the source falls back to capture-only by itself.
+    bool input = true;
 };
 
 // Wire-level channel ids (kept as bare constants; they only select which audio
@@ -136,6 +142,8 @@ void usage(const char* argv0) {
         "                          (default: system,mic for portal/mutter,\n"
         "                           none for test)\n"
         "  --audio-bitrate <kbps> Opus target bitrate (default 96)\n"
+        "  --no-input             don't request remote-input injection (the\n"
+        "                         client's pointer/keyboard are then ignored)\n"
         "  -h, --help             this help\n",
         argv0);
 }
@@ -195,6 +203,8 @@ bool parse_args(int argc, char** argv, Options& o) {
             o.audio = argv[++i];
         } else if (a == "--audio-bitrate") {
             if (!val(o.audio_bitrate_kbps)) return false;
+        } else if (a == "--no-input") {
+            o.input = false;
         } else {
             std::fprintf(stderr, "unknown arg: %s\n", a.c_str());
             return false;
@@ -320,6 +330,7 @@ make_source(const Options& o, int monitor_index,
         opts.source_types =
             (monitor_index == 0) ? 1u : 4u;  // MONITOR : VIRTUAL
         opts.fps_hint = o.fps;
+        opts.enable_input = o.input;
         return std::make_unique<PortalPipeWireSource>(opts);
 #else
         err = "this build has no portal support; rebuild with portal deps or "
@@ -335,6 +346,7 @@ make_source(const Options& o, int monitor_index,
             PortalOptions opts;
             opts.source_types = 1;  // MONITOR
             opts.fps_hint = o.fps;
+            opts.enable_input = o.input;
             return std::make_unique<PortalPipeWireSource>(opts);
 #else
             err = "mutter mode needs the portal source for monitor 0; "
@@ -358,6 +370,7 @@ make_source(const Options& o, int monitor_index,
             PortalOptions opts;
             opts.source_types = 4;  // VIRTUAL
             opts.fps_hint = o.fps;
+            opts.enable_input = o.input;
             return std::make_unique<PortalPipeWireSource>(opts);
         }
 #else
@@ -549,6 +562,36 @@ int main(int argc, char** argv) {
         p->server->on_keyframe_request = [enc = p->encoder.get()] {
             if (enc) enc->force_keyframe();
         };
+
+        // Remote input: route this monitor's INPUT events into its own capture
+        // session, so pointer coordinates land on the surface the client sees.
+        // Sources without an injection backend leave on_input unset and the
+        // client's input is dropped. (The sink stays valid until source->stop()
+        // and guards itself against post-stop calls.)
+        if (InputSink* sink = p->source->input_sink()) {
+            p->server->on_input = [sink](const input::Event& e) {
+                switch (e.kind) {
+                case input::Event::Kind::kMove:
+                    sink->pointer_motion(e.x, e.y);
+                    break;
+                case input::Event::Kind::kButton:
+                    sink->pointer_button(e.button, e.pressed);
+                    break;
+                case input::Event::Kind::kScroll:
+                    sink->pointer_scroll(e.scroll_v, e.scroll_h);
+                    break;
+                case input::Event::Kind::kKey:
+                    sink->key(e.keysym, e.pressed);
+                    break;
+                }
+            };
+            std::fprintf(stderr, "[monitor %d] remote input: enabled\n", i);
+        } else if (opt.input) {
+            std::fprintf(stderr,
+                         "[monitor %d] remote input: unavailable for this "
+                         "source\n",
+                         i);
+        }
 
         // Pace all video sends through the shared bucket, and adapt the
         // encoder bitrate to the loss the client reports (RTCP RRs).

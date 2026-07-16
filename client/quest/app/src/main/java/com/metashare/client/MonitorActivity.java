@@ -27,6 +27,7 @@ public final class MonitorActivity extends Activity
     private TextView statusView;
     private StreamSession session;
     private RemoteInputController inputController;
+    private final SessionInputForwarder inputForwarder = new SessionInputForwarder();
     private int streamWidth;
     private int streamHeight;
     private int monitorIndex;
@@ -56,30 +57,11 @@ public final class MonitorActivity extends Activity
         statusParams.setMargins(18, 18, 18, 18);
         root.addView(statusView, statusParams);
 
-        // Secondary panels intentionally have no toolbar. They still expose
-        // normalized pointer/key callbacks so every streamed screen is ready
-        // for the future remote-input transport.
+        // Secondary panels intentionally have no toolbar, but their pointer
+        // and keyboard still forward to this monitor's own stream session, so
+        // input lands on the surface being looked at.
         inputController = new RemoteInputController(this, root, surfaceView,
-                new RemoteInputController.Listener() {
-                    @Override
-                    public void onPointerInput(RemoteInputController.PointerEvent event) {
-                        if (event.action == android.view.MotionEvent.ACTION_DOWN
-                                || event.action == android.view.MotionEvent.ACTION_UP) {
-                            Log.d(TAG, "screen " + (monitorIndex + 1)
-                                    + " pointer at " + event.x + "," + event.y);
-                        }
-                    }
-
-                    @Override
-                    public void onTextInput(String text) {
-                        Log.d(TAG, "captured keyboard input for screen " + (monitorIndex + 1));
-                    }
-
-                    @Override
-                    public void onKeyInput(int keyCode, boolean pressed) {
-                        Log.v(TAG, "key " + keyCode + (pressed ? " down" : " up"));
-                    }
-                });
+                inputForwarder);
         setContentView(root);
         root.addOnLayoutChangeListener(
                 (v, l, t, r, b, ol, ot, or, ob) -> applyAspectRatio());
@@ -102,6 +84,7 @@ public final class MonitorActivity extends Activity
     public void surfaceCreated(SurfaceHolder holder) {
         if (session == null) {
             session = new StreamSession(this, surfaceView, monitorIndex, this);
+            inputForwarder.setSession(session);
             session.start();
         } else {
             // Session already running (surfaceDestroyed left it alive): the
@@ -122,6 +105,7 @@ public final class MonitorActivity extends Activity
     @Override
     protected void onDestroy() {
         active.remove(this);
+        inputForwarder.setSession(null);
         if (session != null) { session.stop(); session = null; }
         if (inputController != null) inputController.release();
         Log.i(TAG, "Monitor " + (monitorIndex + 1) + " destroyed");
