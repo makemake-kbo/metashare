@@ -4,6 +4,11 @@ A standard Android 2D app for Quest/Horizon OS. It discovers the MetaShare
 streamer, receives raw H.265/H.264 + Opus RTP over UDP, decodes video with the
 Quest hardware decoder (`MediaCodec`), and renders into a `SurfaceView`.
 
+The primary panel owns a compact control strip that stays greyed and partly
+hidden at the top edge until the pointer approaches it. It contains only the
+virtual keyboard, pointer toggle, and monitor minus/count/plus controls.
+Secondary panels intentionally stay chrome-free.
+
 This intentionally does **not** use OpenXR or libwebrtc. Quest launches it as a
 normal resizable app window, which matches the system-window approach used by
 remote-desktop-style apps.
@@ -56,7 +61,15 @@ StreamSession (background thread)
         audio: Opus payload -> AudioSink
         reliability: NACK (sequence gaps) + PLI (request keyframe)
     AudioDecoder: MediaCodec("audio/opus") -> AudioTrack
+
+RemoteInputController
+    pointer: controller/touch/mouse -> normalized screen coordinates
+    keyboard: Android IME -> transport-neutral text/key callbacks
 ```
+
+Pointer and keyboard events currently stop at transport-neutral callbacks; the
+views and Quest system keyboard are ready, but a host input protocol and input
+injection backend are still required before events can control the host.
 
 No third-party media dependency is required — everything uses the Android
 framework (`MediaCodec`, `AudioTrack`, `DatagramSocket`, `Surface`).

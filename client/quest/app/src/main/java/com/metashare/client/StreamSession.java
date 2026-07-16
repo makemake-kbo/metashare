@@ -59,6 +59,7 @@ public final class StreamSession {
     public interface Listener {
         void onStatus(String text);
         void onStreamSize(int width, int height);
+        void onAvailableMonitors(int count);
     }
 
     private final Context context;
@@ -203,6 +204,8 @@ public final class StreamSession {
                 int port = Short.toUnsignedInt(buf.getShort());
                 int monitorCount = Short.toUnsignedInt(buf.getShort());
                 if (version == PROTOCOL_VERSION && port > 0) {
+                    final int available = Math.max(1, monitorCount);
+                    main.post(() -> listener.onAvailableMonitors(available));
                     Log.i(TAG, "discovered streamer at "
                             + packet.getAddress().getHostAddress()
                             + ":" + port + " signaling ("

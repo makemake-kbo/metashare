@@ -23,9 +23,7 @@ class MainWindow : public Gtk::Window {
   private:
     // ---- UI construction ----
     void build_ui();
-    Gtk::ListBoxRow* make_row(const Glib::ustring& title,
-                              const Glib::ustring& subtitle,
-                              Gtk::Widget& control);
+    Gtk::ListBoxRow* make_row(const Glib::ustring& title, Gtk::Widget& control);
     Gtk::Label* make_section_label(const Glib::ustring& text);
 
     // ---- Signal handlers ----
@@ -50,6 +48,7 @@ class MainWindow : public Gtk::Window {
 
     Gtk::SpinButton spin_fps_;
     Gtk::SpinButton spin_bitrate_;
+    Gtk::SpinButton spin_monitors_;
     Gtk::DropDown drop_codec_;
 
     Gtk::ScrolledWindow log_scroll_;

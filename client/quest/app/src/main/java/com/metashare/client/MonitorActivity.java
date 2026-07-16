@@ -11,7 +11,6 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
-import android.widget.PopupMenu;
 import android.widget.TextView;
 
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -27,6 +26,7 @@ public final class MonitorActivity extends Activity
     private FrameLayout root;
     private TextView statusView;
     private StreamSession session;
+    private RemoteInputController inputController;
     private int streamWidth;
     private int streamHeight;
     private int monitorIndex;
@@ -42,16 +42,7 @@ public final class MonitorActivity extends Activity
         surfaceView.getHolder().addCallback(this);
 
         statusView = new TextView(this);
-        statusView.setTextColor(Color.WHITE);
-        statusView.setTextSize(14);
-        statusView.setGravity(Gravity.START);
-        statusView.setBackgroundColor(0xAA000000);
-        statusView.setPadding(18, 10, 18, 10);
-
-        View menuBar = new View(this);
-        menuBar.setBackgroundColor(0xCC444444);
-        menuBar.setClickable(true);
-        menuBar.setOnClickListener(this::showMenu);
+        QuestToolbar.styleStatus(statusView);
 
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
@@ -64,11 +55,31 @@ public final class MonitorActivity extends Activity
                 Gravity.TOP | Gravity.START);
         statusParams.setMargins(18, 18, 18, 18);
         root.addView(statusView, statusParams);
-        FrameLayout.LayoutParams menuBarParams = new FrameLayout.LayoutParams(
-                dp(80), dp(8),
-                Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-        menuBarParams.setMargins(0, dp(8), 0, 0);
-        root.addView(menuBar, menuBarParams);
+
+        // Secondary panels intentionally have no toolbar. They still expose
+        // normalized pointer/key callbacks so every streamed screen is ready
+        // for the future remote-input transport.
+        inputController = new RemoteInputController(this, root, surfaceView,
+                new RemoteInputController.Listener() {
+                    @Override
+                    public void onPointerInput(RemoteInputController.PointerEvent event) {
+                        if (event.action == android.view.MotionEvent.ACTION_DOWN
+                                || event.action == android.view.MotionEvent.ACTION_UP) {
+                            Log.d(TAG, "screen " + (monitorIndex + 1)
+                                    + " pointer at " + event.x + "," + event.y);
+                        }
+                    }
+
+                    @Override
+                    public void onTextInput(String text) {
+                        Log.d(TAG, "captured keyboard input for screen " + (monitorIndex + 1));
+                    }
+
+                    @Override
+                    public void onKeyInput(int keyCode, boolean pressed) {
+                        Log.v(TAG, "key " + keyCode + (pressed ? " down" : " up"));
+                    }
+                });
         setContentView(root);
         root.addOnLayoutChangeListener(
                 (v, l, t, r, b, ol, ot, or, ob) -> applyAspectRatio());
@@ -86,24 +97,6 @@ public final class MonitorActivity extends Activity
     }
 
     int getMonitorIndex() { return monitorIndex; }
-
-    private void showMenu(View anchor) {
-        PopupMenu menu = new PopupMenu(this, anchor);
-        menu.getMenu().add("Monitor " + (monitorIndex + 1)).setEnabled(false);
-        menu.getMenu().add("Close monitor");
-        menu.setOnMenuItemClickListener(item -> {
-            if ("Close monitor".contentEquals(item.getTitle())) {
-                finish();
-                return true;
-            }
-            return false;
-        });
-        menu.show();
-    }
-
-    private int dp(int value) {
-        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
-    }
 
     @Override
     public void surfaceCreated(SurfaceHolder holder) {
@@ -130,6 +123,7 @@ public final class MonitorActivity extends Activity
     protected void onDestroy() {
         active.remove(this);
         if (session != null) { session.stop(); session = null; }
+        if (inputController != null) inputController.release();
         Log.i(TAG, "Monitor " + (monitorIndex + 1) + " destroyed");
         super.onDestroy();
     }
@@ -147,6 +141,11 @@ public final class MonitorActivity extends Activity
         streamWidth = width;
         streamHeight = height;
         runOnUiThread(this::applyAspectRatio);
+    }
+
+    @Override
+    public void onAvailableMonitors(int count) {
+        // Screen count is owned by the primary activity's toolbar.
     }
 
     private void applyAspectRatio() {

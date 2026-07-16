@@ -12,9 +12,7 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
-import android.widget.PopupMenu;
 import android.widget.TextView;
-import android.widget.Toast;
 
 import java.util.HashSet;
 import java.util.Set;
@@ -29,7 +27,10 @@ public final class MainActivity extends Activity
     private FrameLayout root;
     private TextView statusView;
     private int monitorCount = 1;
+    private int availableMonitorCount = MAX_MONITORS;
     private StreamSession session;
+    private QuestToolbar toolbar;
+    private RemoteInputController inputController;
     private volatile int streamWidth;
     private volatile int streamHeight;
 
@@ -45,16 +46,7 @@ public final class MainActivity extends Activity
         surfaceView.getHolder().addCallback(this);
 
         statusView = new TextView(this);
-        statusView.setTextColor(Color.WHITE);
-        statusView.setTextSize(14);
-        statusView.setGravity(Gravity.START);
-        statusView.setBackgroundColor(0xAA000000);
-        statusView.setPadding(18, 10, 18, 10);
-
-        View menuBar = new View(this);
-        menuBar.setBackgroundColor(0xCC444444);
-        menuBar.setClickable(true);
-        menuBar.setOnClickListener(this::showMenu);
+        QuestToolbar.styleStatus(statusView);
 
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
@@ -67,11 +59,46 @@ public final class MainActivity extends Activity
                 Gravity.TOP | Gravity.START);
         statusParams.setMargins(18, 18, 18, 18);
         root.addView(statusView, statusParams);
-        FrameLayout.LayoutParams menuBarParams = new FrameLayout.LayoutParams(
-                dp(80), dp(8),
-                Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-        menuBarParams.setMargins(0, dp(8), 0, 0);
-        root.addView(menuBar, menuBarParams);
+
+        inputController = new RemoteInputController(this, root, surfaceView,
+                new RemoteInputController.Listener() {
+                    @Override
+                    public void onPointerInput(RemoteInputController.PointerEvent event) {
+                        handlePointerInput(event);
+                    }
+
+                    @Override
+                    public void onTextInput(String text) {
+                        // Deliberately do not log content; this callback is the
+                        // future input transport boundary.
+                        Log.d(TAG, "captured " + text.length() + " keyboard character(s)");
+                    }
+
+                    @Override
+                    public void onKeyInput(int keyCode, boolean pressed) {
+                        Log.v(TAG, "key " + keyCode + (pressed ? " down" : " up"));
+                    }
+                });
+
+        toolbar = new QuestToolbar(this, root,
+                new QuestToolbar.Callbacks() {
+                    @Override
+                    public void onScreenCountRequested(int count) {
+                        setMonitorCount(count);
+                    }
+
+                    @Override
+                    public void onKeyboardRequested() {
+                        inputController.showKeyboard();
+                    }
+
+                    @Override
+                    public void onPointerEnabledChanged(boolean enabled) {
+                        inputController.setPointerEnabled(enabled);
+                    }
+
+                });
+        toolbar.setScreenCount(monitorCount, availableMonitorCount);
         setContentView(root);
         root.addOnLayoutChangeListener(
                 (v, l, t, r, b, ol, ot, or, ob) -> applyAspectRatio());
@@ -86,22 +113,8 @@ public final class MainActivity extends Activity
         setStatus("Searching for MetaShare streamer...");
     }
 
-    private void showMenu(View anchor) {
-        PopupMenu menu = new PopupMenu(this, anchor);
-        for (int i = 1; i <= MAX_MONITORS; i++) {
-            String label = i + (i == 1 ? " Monitor" : " Monitors");
-            menu.getMenu().add(0, i, i, label).setCheckable(true).setChecked(i == monitorCount);
-        }
-        menu.getMenu().setGroupCheckable(0, true, true);
-        menu.setOnMenuItemClickListener(item -> {
-            setMonitorCount(item.getItemId());
-            return true;
-        });
-        menu.show();
-    }
-
     private void setMonitorCount(int requestedCount) {
-        final int count = Math.max(1, Math.min(MAX_MONITORS, requestedCount));
+        final int count = Math.max(1, Math.min(availableMonitorCount, requestedCount));
         monitorCount = count;
         Log.i(TAG, "setting monitor count to " + count);
 
@@ -120,8 +133,7 @@ public final class MainActivity extends Activity
             if (m.getMonitorIndex() >= count) m.finish();
         }
         launchedSecondaries.removeIf(i -> i >= count);
-
-        Toast.makeText(this, count + " monitor" + (count > 1 ? "s" : ""), Toast.LENGTH_SHORT).show();
+        toolbar.setScreenCount(count, availableMonitorCount);
     }
 
     // ------------------------------------------------------- SurfaceHolder.Callback
@@ -153,6 +165,7 @@ public final class MainActivity extends Activity
     @Override
     protected void onDestroy() {
         if (session != null) { session.stop(); session = null; }
+        if (inputController != null) inputController.release();
         launchedSecondaries.clear();
         super.onDestroy();
     }
@@ -167,6 +180,18 @@ public final class MainActivity extends Activity
         streamWidth = width;
         streamHeight = height;
         runOnUiThread(this::applyAspectRatio);
+    }
+
+    @Override
+    public void onAvailableMonitors(int count) {
+        runOnUiThread(() -> {
+            availableMonitorCount = Math.max(1, Math.min(MAX_MONITORS, count));
+            if (monitorCount > availableMonitorCount) {
+                setMonitorCount(availableMonitorCount);
+            } else {
+                toolbar.setScreenCount(monitorCount, availableMonitorCount);
+            }
+        });
     }
 
     private void applyAspectRatio() {
@@ -192,7 +217,12 @@ public final class MainActivity extends Activity
         else { statusView.setVisibility(View.VISIBLE); statusView.setText(text); }
     }
 
-    private int dp(int value) {
-        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    private void handlePointerInput(RemoteInputController.PointerEvent event) {
+        // Keep motion quiet in logcat; down/up are useful while the input
+        // transport is being connected later.
+        if (event.action == android.view.MotionEvent.ACTION_DOWN
+                || event.action == android.view.MotionEvent.ACTION_UP) {
+            Log.d(TAG, "pointer " + event.action + " at " + event.x + "," + event.y);
+        }
     }
 }

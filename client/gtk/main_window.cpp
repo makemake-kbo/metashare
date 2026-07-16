@@ -26,19 +26,22 @@ constexpr int kMinFps = 1;
 constexpr int kMaxFps = 240;
 constexpr int kMinBitrate = 200;     // kbps
 constexpr int kMaxBitrate = 200000;  // 200 Mbps
+constexpr int kMinMonitors = 1;
+constexpr int kMaxMonitors = 3;
 
 // Mark the binary we look for in $PATH when no override is given.
 constexpr const char* kStreamerBinary = "metashare-streamer";
 
-// The GUI always streams this many virtual displays via the portal's VIRTUAL
-// source type (each is a standalone virtual monitor the user can place windows
-// on and the Quest client can position in 3-D space).
-constexpr int kVirtualDisplays = 3;
-
-// A tiny CSS chunk giving the status dot its colour and the primary button a
-// little extra presence. Everything else inherits from the active GTK theme
-// (Adwaita on GNOME), so the result tracks the platform look.
+// A small layer over the active GTK theme. Colours still follow the platform,
+// while spacing and shape give the control panel a clearer visual hierarchy.
 const char* const kUiCss = R"css(
+  .hero-card {
+    background: linear-gradient(135deg,
+      alpha(@accent_bg_color, 0.17), alpha(@theme_bg_color, 0.65));
+    border: 1px solid alpha(@accent_color, 0.22);
+    border-radius: 18px;
+    padding: 14px;
+  }
   .status-dot {
     border-radius: 9999px;
     min-width: 10px;
@@ -51,14 +54,25 @@ const char* const kUiCss = R"css(
 
   /* Subtle grouping for the primary action so it reads as the main CTA. */
   .primary-action {
-    padding: 10px 16px;
+    padding: 11px 18px;
     border-radius: 12px;
     font-weight: 700;
   }
 
   .section-label {
     color: alpha(@theme_fg_color, 0.55);
+    font-size: 0.82em;
     font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+
+  .log-frame {
+    background-color: alpha(@theme_fg_color, 0.035);
+    border-radius: 14px;
+  }
+  .log-view {
+    background-color: transparent;
+    font-size: 0.92em;
   }
 )css";
 
@@ -85,48 +99,27 @@ MainWindow::~MainWindow() {
 // ---------------------------------------------------------------------------
 
 Gtk::ListBoxRow* MainWindow::make_row(const Glib::ustring& title,
-                                      const Glib::ustring& subtitle,
                                       Gtk::Widget& control) {
     auto* row = Gtk::make_managed<Gtk::ListBoxRow>();
     row->set_activatable(false);
     row->set_selectable(false);
 
-    auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 2);
+    auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+    box->set_hexpand(true);
     box->set_margin_start(12);
     box->set_margin_end(12);
     box->set_margin_top(10);
     box->set_margin_bottom(10);
 
-    auto* title_box =
-        Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
-    title_box->set_hexpand(true);
-
-    auto* labels = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 2);
-    labels->set_hexpand(true);
-    labels->set_halign(Gtk::Align::START);
-    labels->set_valign(Gtk::Align::CENTER);
-
     auto* t = Gtk::make_managed<Gtk::Label>(title);
     t->set_halign(Gtk::Align::START);
     t->set_xalign(0.0f);
-    labels->append(*t);
-
-    if (!subtitle.empty()) {
-        auto* s = Gtk::make_managed<Gtk::Label>(subtitle);
-        s->set_halign(Gtk::Align::START);
-        s->set_xalign(0.0f);
-        s->set_wrap(true);
-        s->add_css_class("dim-label");
-        labels->append(*s);
-    }
-
-    title_box->append(*labels);
+    t->set_hexpand(true);
+    box->append(*t);
 
     control.set_halign(Gtk::Align::END);
     control.set_valign(Gtk::Align::CENTER);
-    title_box->append(control);
-
-    box->append(*title_box);
+    box->append(control);
     row->set_child(*box);
     return row;
 }
@@ -143,7 +136,7 @@ Gtk::Label* MainWindow::make_section_label(const Glib::ustring& text) {
 
 void MainWindow::build_ui() {
     set_title("MetaShare Streamer");
-    set_default_size(480, 620);
+    set_default_size(500, 600);
     set_resizable(true);
 
     inject_css_provider();
@@ -161,30 +154,28 @@ void MainWindow::build_ui() {
     header_.set_show_title_buttons(true);
 
     // ---- Main column --------------------------------------------------------
-    auto* root = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 18);
-    root->set_margin_start(18);
-    root->set_margin_end(18);
-    root->set_margin_top(18);
-    root->set_margin_bottom(18);
+    auto* root = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 20);
+    root->set_margin_start(22);
+    root->set_margin_end(22);
+    root->set_margin_top(22);
+    root->set_margin_bottom(22);
 
-    // --- Status row + primary action -----------------------------------------
-    // A compact "current state" line on the left and a big Start/Stop button
-    // filling the rest of the width.
-    auto* status_row =
-        Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
-    status_row->set_valign(Gtk::Align::CENTER);
+    // --- Status + primary action --------------------------------------------
+    auto* hero = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+    hero->add_css_class("hero-card");
+    hero->set_valign(Gtk::Align::CENTER);
 
     status_dot_.set_size_request(10, 10);
     status_dot_.add_css_class("status-dot");
     status_dot_.add_css_class("status-idle");
-    status_row->append(status_dot_);
+    hero->append(status_dot_);
 
     status_label_.set_text("Idle");
     status_label_.set_xalign(0.0f);
     status_label_.set_halign(Gtk::Align::START);
     status_label_.set_hexpand(true);
     status_label_.add_css_class("dim-label");
-    status_row->append(status_label_);
+    hero->append(status_label_);
 
     btn_primary_.set_label("Start Streaming");
     btn_primary_.add_css_class("suggested-action");
@@ -194,15 +185,14 @@ void MainWindow::build_ui() {
     btn_primary_.set_icon_name("media-playback-start-symbolic");
     btn_primary_.signal_clicked().connect(
         sigc::mem_fun(*this, &MainWindow::on_primary_clicked));
-    status_row->append(btn_primary_);
-
-    root->append(*status_row);
+    hero->append(btn_primary_);
+    root->append(*hero);
 
     // --- Settings list -------------------------------------------------------
     settings_box_.set_orientation(Gtk::Orientation::VERTICAL);
     settings_box_.set_spacing(0);
 
-    root->append(*make_section_label("Encoder"));
+    root->append(*make_section_label("SETTINGS"));
 
     auto* list = Gtk::make_managed<Gtk::ListBox>();
     list->set_selection_mode(Gtk::SelectionMode::NONE);
@@ -219,11 +209,18 @@ void MainWindow::build_ui() {
     {
         drop_codec_.set_model(
             Gtk::StringList::create({"HEVC (H.265)", "H.264"}));
-        drop_codec_.set_tooltip_text(
-            "HEVC gives better quality per bit and is the default. H.264 is "
-            "the fallback if no HEVC decoder is available on the headset.");
-        list->append(*make_row("Codec", "HEVC is recommended for Meta Quest.",
-                               drop_codec_));
+        drop_codec_.set_tooltip_text("HEVC recommended; H.264 fallback.");
+        list->append(*make_row("Codec", drop_codec_));
+    }
+
+    // --- Virtual displays ---
+    {
+        spin_monitors_.set_range(kMinMonitors, kMaxMonitors);
+        spin_monitors_.set_increments(1, 1);
+        spin_monitors_.set_numeric(true);
+        spin_monitors_.set_value(kMaxMonitors);
+        spin_monitors_.set_width_chars(3);
+        list->append(*make_row("Virtual screens", spin_monitors_));
     }
 
     // --- Bitrate ---
@@ -239,10 +236,7 @@ void MainWindow::build_ui() {
         auto* unit = Gtk::make_managed<Gtk::Label>("kbps");
         unit->add_css_class("dim-label");
         wrap->append(*unit);
-        list->append(*make_row(
-            "Bitrate",
-            "Max encoder bitrate; adapts down under loss. 8 000 ≈ 1080p60.",
-            *wrap));
+        list->append(*make_row("Bitrate", *wrap));
     }
 
     // --- Frame rate ---
@@ -258,25 +252,35 @@ void MainWindow::build_ui() {
         auto* unit = Gtk::make_managed<Gtk::Label>("fps");
         unit->add_css_class("dim-label");
         wrap->append(*unit);
-        list->append(*make_row(
-            "Frame rate", "Frames per second sent to the encoder.", *wrap));
+        list->append(*make_row("Frame rate", *wrap));
     }
 
     settings_box_.append(*list);
     root->append(settings_box_);
 
     // ---- Log area ----
-    auto* log_label = make_section_label("Streamer output");
-    log_label->set_margin_top(6);
-    root->append(*log_label);
+    auto* log_header =
+        Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+    auto* log_label = make_section_label("LOG");
+    log_label->set_hexpand(true);
+    log_label->set_margin_bottom(0);
+    log_header->append(*log_label);
+    auto* clear_log = Gtk::make_managed<Gtk::Button>("Clear");
+    clear_log->add_css_class("flat");
+    clear_log->set_tooltip_text("Clear streamer output");
+    clear_log->signal_clicked().connect([this] { log_buf_->set_text(""); });
+    log_header->append(*clear_log);
+    root->append(*log_header);
 
     auto* log_frame = Gtk::make_managed<Gtk::Frame>();
+    log_frame->add_css_class("log-frame");
     log_frame->set_child(log_scroll_);
     log_buf_ = Gtk::TextBuffer::create();
     log_view_.set_buffer(log_buf_);
     log_view_.set_editable(false);
     log_view_.set_cursor_visible(false);
     log_view_.set_monospace(true);
+    log_view_.add_css_class("log-view");
     log_view_.set_wrap_mode(Gtk::WrapMode::WORD);
     log_view_.set_top_margin(8);
     log_view_.set_bottom_margin(8);
@@ -316,13 +320,13 @@ std::vector<std::string> MainWindow::build_argv() const {
     // The streamer's own defaults handle most things. We only override:
     //   --source portal  — always virtual monitors (not the physical screen),
     //                       so the Quest gets dedicated virtual displays.
-    //   --monitors N     — stream kVirtualDisplays virtual displays.
+    //   --monitors N     — stream the requested number of virtual displays.
     //   --fps/--bitrate/--codec — the three knobs exposed in the UI.
     argv.push_back("--source");
     argv.push_back("portal");
 
     argv.push_back("--monitors");
-    argv.push_back(std::to_string(kVirtualDisplays));
+    argv.push_back(std::to_string(spin_monitors_.get_value_as_int()));
 
     argv.push_back("--fps");
     argv.push_back(std::to_string(spin_fps_.get_value_as_int()));
