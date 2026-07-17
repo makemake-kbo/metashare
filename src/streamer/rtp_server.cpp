@@ -263,9 +263,9 @@ void RtpServer::sender_loop() {
             std::unique_lock<std::mutex> lk(send_mu_);
             send_cv_.wait(lk, [this] { return !running_ || !send_q_.empty(); });
             if (!running_ && send_q_.empty()) break;
-            // Take everything queued so far in one swipe (still paced per packet
-            // below); anything that arrives while we drain waits for the next
-            // pass. Keeps send_mu_ held only briefly.
+            // Take everything queued so far in one swipe (still paced per
+            // packet below); anything that arrives while we drain waits for the
+            // next pass. Keeps send_mu_ held only briefly.
             batch.clear();
             batch.reserve(send_q_.size());
             for (auto& p : send_q_) batch.push_back(std::move(p));
@@ -281,9 +281,10 @@ void RtpServer::sender_loop() {
         if (!streaming) continue;  // client gone — drop the batch
         for (const auto& pkt : batch) {
             if (!running_) break;
-            // The shared pacer smooths keyframe bursts across *all* pipelines so
-            // the aggregate stays under what the WiFi link can absorb. Now that
-            // it runs here, the sleep costs wire latency, not a capture stall.
+            // The shared pacer smooths keyframe bursts across *all* pipelines
+            // so the aggregate stays under what the WiFi link can absorb. Now
+            // that it runs here, the sleep costs wire latency, not a capture
+            // stall.
             if (pacer_) pacer_->consume(pkt.size());
             ::sendto(udp_fd_, pkt.data(), pkt.size(), 0,
                      reinterpret_cast<sockaddr*>(&dst), sizeof(dst));
@@ -355,23 +356,24 @@ void RtpServer::nack_loop() {
                 send_sender_report(audio_ssrc_, audio_pkts_.load(),
                                    audio_octets_.load(), audio_last_ts_.load());
                 // Per-monitor throughput/health, so monitor 0 (physical) and
-                // the virtual monitors can be compared at a glance. High retx or
-                // loss on the virtual line => the flicker is packet loss on the
-                // wire; near-zero on both while it still flickers => the problem
-                // is downstream (client decode of a second concurrent stream).
+                // the virtual monitors can be compared at a glance. High retx
+                // or loss on the virtual line => the flicker is packet loss on
+                // the wire; near-zero on both while it still flickers => the
+                // problem is downstream (client decode of a second concurrent
+                // stream).
                 const std::uint64_t pkts = video_pkts_.load();
                 const std::uint64_t retx = video_retx_count_.load();
                 const std::uint64_t drops = send_drops_.load();
-                std::fprintf(stderr,
-                             "[monitor %d stats] %llu pkt/s, %llu retx/s, "
-                             "%llu qdrop/s, loss %.1f%%\n",
-                             id_,
-                             static_cast<unsigned long long>(pkts - prev_pkts),
-                             static_cast<unsigned long long>(retx - prev_retx),
-                             static_cast<unsigned long long>(drops - prev_drops),
-                             static_cast<double>(
-                                 last_loss_.load(std::memory_order_relaxed)) *
-                                 100.0);
+                std::fprintf(
+                    stderr,
+                    "[monitor %d stats] %llu pkt/s, %llu retx/s, "
+                    "%llu qdrop/s, loss %.1f%%\n",
+                    id_, static_cast<unsigned long long>(pkts - prev_pkts),
+                    static_cast<unsigned long long>(retx - prev_retx),
+                    static_cast<unsigned long long>(drops - prev_drops),
+                    static_cast<double>(
+                        last_loss_.load(std::memory_order_relaxed)) *
+                        100.0);
                 prev_pkts = pkts;
                 prev_retx = retx;
                 prev_drops = drops;

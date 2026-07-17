@@ -52,7 +52,8 @@ class RtpServer {
     void stop();
 
     // Human-readable id (the monitor index) used only to tag the 1 Hz stats
-    // line, so per-monitor loss/retransmit rates are easy to compare in the log.
+    // line, so per-monitor loss/retransmit rates are easy to compare in the
+    // log.
     void set_id(int id) { id_ = id; }
 
     // Format must be set before start() — it picks the packetizer and feeds
@@ -130,7 +131,8 @@ class RtpServer {
     std::mutex send_mu_;
     std::condition_variable send_cv_;
     std::deque<rtp::Packet> send_q_;
-    std::atomic<std::uint64_t> send_drops_{0};  // packets shed on queue overflow
+    std::atomic<std::uint64_t> send_drops_{
+        0};  // packets shed on queue overflow
 
     mutable std::mutex peer_mu_;
     bool peer_streaming_ = false;
@@ -152,7 +154,8 @@ class RtpServer {
     std::atomic<std::uint32_t> audio_last_ts_{0};
 
     // Diagnostics: monitor id, retransmitted-packet count, and the last
-    // fraction-lost the client reported. Printed once per second by nack_loop().
+    // fraction-lost the client reported. Printed once per second by
+    // nack_loop().
     int id_ = 0;
     std::atomic<std::uint64_t> video_retx_count_{0};
     std::atomic<float> last_loss_{0.0f};

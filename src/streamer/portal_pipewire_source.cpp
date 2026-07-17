@@ -671,7 +671,8 @@ int PortalPipeWireSource::deliver_front_locked(AVFrame** out,
     if (!front_) return 0;
     // Copy into out_ (which on_process() never touches) so the returned frame
     // stays valid until the next call, per the FrameSource contract — the
-    // PipeWire thread may swap and overwrite front_/back_ right after we return.
+    // PipeWire thread may swap and overwrite front_/back_ right after we
+    // return.
     if (!out_ || out_->width != front_->width ||
         out_->height != front_->height || out_->format != front_->format) {
         if (out_) av_frame_free(&out_);
@@ -705,9 +706,10 @@ int PortalPipeWireSource::next_frame(AVFrame** out, std::int64_t& pts_usec) {
 int PortalPipeWireSource::latest_frame(AVFrame** out, std::int64_t& pts_usec) {
     std::lock_guard<std::mutex> lk(mu_);
     if (!running_) return -1;
-    // No wait: if nothing has been captured since the last pull, tell the caller
-    // to re-encode its previous frame. This is what decouples the encode cadence
-    // from the compositor's bursty delivery — the caller ticks on its own clock.
+    // No wait: if nothing has been captured since the last pull, tell the
+    // caller to re-encode its previous frame. This is what decouples the encode
+    // cadence from the compositor's bursty delivery — the caller ticks on its
+    // own clock.
     if (!have_new_) return 0;
     have_new_ = false;
     return deliver_front_locked(out, pts_usec);

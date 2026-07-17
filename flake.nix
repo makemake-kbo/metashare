@@ -65,6 +65,13 @@
               set -euo pipefail
               root="$(git rev-parse --show-toplevel)"
               cd "$root"
+
+              # flatpak's icon validator loads icons through gdk-pixbuf, whose
+              # SVG loader (librsvg) is a dynamic module. Outside a desktop
+              # session nothing points at a loaders.cache, so SVG app icons
+              # fail export with "Format not recognized"; point it at librsvg's
+              # (moduleDir is ".../loaders", the cache sits beside it).
+              export GDK_PIXBUF_MODULE_FILE="${pkgs.librsvg.out}/${pkgs.gdk-pixbuf.moduleDir}.cache"
               state="$(mktemp -d)"
               trap 'rm -rf "$state"' EXIT
 

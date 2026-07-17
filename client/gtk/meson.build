@@ -23,17 +23,17 @@ install_data(
   'dev.metashare.StreamerUI.desktop',
   install_dir : get_option('datadir') / 'applications')
 
-# App icon + wordmark logo + mark, shipped as scalable named icons under the
-# GNOME icon theme. The app-id name (`dev.metashare.StreamerUI`) is what the
-# desktop entry's Icon= and Gtk::Image lookups resolve against.
+# App icon + mark, shipped as scalable named icons under the GNOME icon
+# theme. The app-id name (`dev.metashare.StreamerUI`) is what the desktop
+# entry's Icon= and Gtk::Image lookups resolve against. The wordmark logo is
+# deliberately not installed here: icon-theme entries must be square, and
+# flatpak's export validator rejects the 520x160 wordmark outright.
 icondir = get_option('datadir') / 'icons' / 'hicolor' / 'scalable' / 'apps'
 install_data(
   files('../../data/brand/metashare-icon.svg',
-        '../../data/brand/metashare-logo.svg',
         '../../data/brand/metashare-mark.svg'),
   install_dir : icondir,
   rename : [
     'dev.metashare.StreamerUI.svg',
-    'dev.metashare.StreamerUI-logo.svg',
     'dev.metashare.StreamerUI-mark.svg',
   ])

@@ -26,12 +26,12 @@ namespace metashare::input {
 struct Event {
     enum class Kind { kMove, kButton, kScroll, kKey };
     Kind kind{};
-    double x = 0, y = 0;        // kMove, normalized 0..1
-    int button = 0;             // kButton, evdev code
-    bool pressed = false;       // kButton / kKey
-    std::uint32_t keysym = 0;   // kKey
-    int scroll_v = 0;           // kScroll, positive = down
-    int scroll_h = 0;           // kScroll, positive = right
+    double x = 0, y = 0;       // kMove, normalized 0..1
+    int button = 0;            // kButton, evdev code
+    bool pressed = false;      // kButton / kKey
+    std::uint32_t keysym = 0;  // kKey
+    int scroll_v = 0;          // kScroll, positive = down
+    int scroll_h = 0;          // kScroll, positive = right
 };
 
 // Parse one INPUT body. Returns false on malformed input; out is left in an
@@ -74,8 +74,7 @@ inline bool parse(const std::string& body, Event& out) {
         out.pressed = (s != 0);
         return true;
     }
-    default:
-        return false;
+    default: return false;
     }
 }
 

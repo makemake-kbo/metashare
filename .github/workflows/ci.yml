@@ -72,10 +72,11 @@ jobs:
             gradle --no-daemon assembleDebug
           '
 
+      # The Gradle ABI split names the artifact after the ABI, not "app-debug".
       - name: Stage APK
         run: |
           mkdir -p dist
-          cp client/quest/app/build/outputs/apk/debug/app-debug.apk \
+          cp client/quest/app/build/outputs/apk/debug/app-arm64-v8a-debug.apk \
              dist/metashare-quest.apk
 
       - name: Upload APK artifact

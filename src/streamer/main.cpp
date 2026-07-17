@@ -70,7 +70,8 @@ struct Options {
     int width = 1920;
     int height = 1080;
     // Default matches the Quest's 72 Hz refresh so the client's composite-to-
-    // vsync step lands on a whole frame instead of beating against a 60 Hz grid.
+    // vsync step lands on a whole frame instead of beating against a 60 Hz
+    // grid.
     int fps = 72;
     // Ceiling for the loss-based bitrate controller. 8 Mbps is comfortable
     // for 1080p60 HEVC and leaves WiFi headroom for multiple monitors.
@@ -732,8 +733,8 @@ int main(int argc, char** argv) {
                 // so consecutive ticks land on consecutive multiples of
                 // period_usec — a perfectly even RTP clock for the client's
                 // jitter buffer, regardless of how bursty capture was. `now` is
-                // the post-sleep tick time (latest_frame() above doesn't block),
-                // so it already sits on the grid.
+                // the post-sleep tick time (latest_frame() above doesn't
+                // block), so it already sits on the grid.
                 const auto now_us =
                     std::chrono::duration_cast<std::chrono::microseconds>(
                         now.time_since_epoch())

@@ -145,8 +145,8 @@ bool Encoder::open(const EncoderConfig& cfg, std::string& err) {
                 // async_depth to 2, keeping a second frame in flight before it
                 // hands back the first frame's packet — ~1 frame (16 ms @60fps)
                 // of pure latency. With no B-frames a single realtime encode is
-                // well under a frame period, so depth 1 costs no throughput here
-                // and gives back that frame of glass-to-glass delay.
+                // well under a frame period, so depth 1 costs no throughput
+                // here and gives back that frame of glass-to-glass delay.
                 av_opt_set_int(ctx->priv_data, "async_depth", 1, 0);
             }
 
