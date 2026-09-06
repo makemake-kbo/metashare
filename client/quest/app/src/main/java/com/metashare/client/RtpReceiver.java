@@ -285,7 +285,14 @@ public final class RtpReceiver {
                     continue;
                 }
 
-                if (!jitter.containsKey(ext)) {
+                if (nextExtSeq < 0 || ext == nextExtSeq) {
+                    // The common in-order path borrows the receive buffer for
+                    // synchronous assembly, avoiding per-packet copies/nodes.
+                    nextExtSeq = ext + 1;
+                    depack.feed(data, payloadOff, payloadLen, marker,
+                                ts * 1_000_000L / videoClockRate, videoSink);
+                    if (depack.needsKeyframe()) requestKeyframe();
+                } else if (!jitter.containsKey(ext)) {
                     byte[] payload = new byte[payloadLen];
                     System.arraycopy(data, payloadOff, payload, 0, payloadLen);
                     jitter.put(ext, new HeldVideo(payload, payloadLen, marker, ts));

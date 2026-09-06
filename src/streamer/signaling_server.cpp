@@ -16,19 +16,40 @@ namespace metashare::signal {
 
 namespace {
 
-// Read one newline-terminated line from a socket. Returns false on EOF/error.
-bool read_line(int fd, std::string& line) {
-    line.clear();
-    char c = 0;
-    while (true) {
-        ssize_t n = ::recv(fd, &c, 1, 0);
-        if (n <= 0) return false;
-        if (c == '\n') return true;
-        line.push_back(c);
-        // Cap pathological lines so a malicious peer can't OOM us.
-        if (line.size() > 65536) return false;
+// Preserve bytes after a newline so one recv can serve several input events.
+class LineReader {
+  public:
+    bool read_line(int fd, std::string& line) {
+        line.clear();
+        for (;;) {
+            if (pos_ == size_) {
+                const ssize_t n = ::recv(fd, buffer_.data(), buffer_.size(), 0);
+                if (n < 0 && errno == EINTR) continue;
+                if (n <= 0) return false;
+                pos_ = 0;
+                size_ = static_cast<std::size_t>(n);
+            }
+            const char* begin = buffer_.data() + pos_;
+            const auto* newline = static_cast<const char*>(
+                std::memchr(begin, '\n', size_ - pos_));
+            const auto count = newline
+                                   ? static_cast<std::size_t>(newline - begin)
+                                   : size_ - pos_;
+            if (line.size() + count > 65536) return false;
+            line.append(begin, count);
+            pos_ += count;
+            if (newline) {
+                ++pos_;
+                return true;
+            }
+        }
     }
-}
+
+  private:
+    std::array<char, 4096> buffer_{};
+    std::size_t pos_ = 0;
+    std::size_t size_ = 0;
+};
 
 bool send_all(int fd, const void* data, std::size_t len) {
     auto* p = static_cast<const char*>(data);
@@ -140,9 +161,10 @@ void Server::client_loop(int fd, const sockaddr_in& peer,
     // HELLO. The new raw-RTP protocol has no "OK" marker — HELLO is first.
     if (on_connect) on_connect(peer);
 
+    LineReader reader;
     std::string line;
     while (running_) {
-        if (!read_line(fd, line)) break;
+        if (!reader.read_line(fd, line)) break;
         Message msg;
         if (!parse(line, msg)) {
             std::fprintf(stderr, "[signaling] malformed line: %zu bytes\n",
