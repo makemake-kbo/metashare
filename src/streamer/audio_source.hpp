@@ -19,6 +19,8 @@
 
 namespace metashare {
 
+inline constexpr int kAudioFrameMs = 10;
+
 struct AudioFormat {
     int sample_rate = 48000;
     int channels = 2;

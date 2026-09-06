@@ -25,7 +25,7 @@ class TestToneSource final : public AudioSource {
   private:
     AudioFormat fmt_;
     double frequency_;
-    // 20 ms worth of s16 samples — matches one Opus frame at 48 kHz so the
+    // 10 ms worth of s16 samples — matches one Opus frame at 48 kHz so the
     // encoder drains a full packet every call without internal buffering.
     std::vector<std::int16_t> buffer_;
     std::int64_t frame_index_ = 0;

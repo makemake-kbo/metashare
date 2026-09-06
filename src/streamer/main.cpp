@@ -808,7 +808,6 @@ int main(int argc, char** argv) {
             AudioEncoderConfig acfg;
             acfg.format = audio_fmt;
             acfg.bitrate_kbps = opt.audio_bitrate_kbps;
-            acfg.frame_ms = 20;
             if (!ac->encoder->open(acfg, err)) {
                 std::fprintf(stderr,
                              "[audio:%u] encoder open failed: %s — disabling\n",

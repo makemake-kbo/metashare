@@ -66,12 +66,14 @@ class PipeWireAudioSource final : public AudioSource {
     pw_stream* stream_ = nullptr;
     struct spa_hook stream_listener_;
 
-    // Ring-style back buffer: PipeWire writes back_, next_chunk() drains it.
+    // Fixed 50 ms ring; overflow discards oldest complete PCM frames.
     // loan_ holds the slice currently handed to the encoder so subsequent
     // on_process() appends can't invalidate the borrowed pointer.
     std::mutex mu_;
     std::condition_variable cv_;
     std::vector<std::int16_t> buffer_;
+    std::size_t read_pos_ = 0;
+    std::size_t buffered_samples_ = 0;
     std::vector<std::int16_t> loan_;
     std::int64_t pts_usec_ = 0;
     std::atomic<bool> running_{false};

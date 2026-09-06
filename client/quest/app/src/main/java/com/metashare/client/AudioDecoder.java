@@ -8,6 +8,7 @@ import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.SystemClock;
 import android.util.Log;
 
 import java.nio.ByteBuffer;
@@ -29,6 +30,9 @@ public final class AudioDecoder {
     private AudioTrack track;
     private final ConcurrentLinkedQueue<Integer> freeInputs = new ConcurrentLinkedQueue<>();
     private volatile boolean released = false;
+    private long lastAudioLogMs;
+    private int droppedPcmBytes;
+    private int lastUnderruns;
 
     public void init(int sampleRate, int channels) throws Exception {
         MediaFormat fmt = MediaFormat.createAudioFormat(
@@ -47,7 +51,7 @@ public final class AudioDecoder {
                 : AudioFormat.CHANNEL_OUT_MONO;
         int minBuf = AudioTrack.getMinBufferSize(sampleRate, channelMask,
                 AudioFormat.ENCODING_PCM_16BIT);
-        int bufSize = Math.max(minBuf * 2, 8192);
+        int bufSize = Math.max(minBuf, sampleRate * channels * 2 / 50);
         track = new AudioTrack.Builder()
                 .setAudioAttributes(new AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -60,6 +64,7 @@ public final class AudioDecoder {
                         .build())
                 .setBufferSizeInBytes(bufSize)
                 .setTransferMode(AudioTrack.MODE_STREAM)
+                .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
                 .setSessionId(AudioManager.AUDIO_SESSION_ID_GENERATE)
                 .build();
         track.play();
@@ -80,8 +85,19 @@ public final class AudioDecoder {
                     ByteBuffer out = c.getOutputBuffer(index);
                     out.position(info.offset);
                     out.limit(info.offset + info.size);
-                    // Blocking write paces the decoder to real-time playback.
-                    track.write(out, info.size, AudioTrack.WRITE_BLOCKING);
+                    int written = track.write(out, info.size, AudioTrack.WRITE_NON_BLOCKING);
+                    droppedPcmBytes += info.size - Math.max(0, written);
+                    long now = SystemClock.uptimeMillis();
+                    if (now - lastAudioLogMs >= 1000) {
+                        int underruns = track.getUnderrunCount();
+                        if (droppedPcmBytes > 0 || underruns != lastUnderruns) {
+                            Log.w(TAG, "playback 1s: dropped PCM bytes=" + droppedPcmBytes
+                                    + " underruns=" + (underruns - lastUnderruns));
+                        }
+                        droppedPcmBytes = 0;
+                        lastUnderruns = underruns;
+                        lastAudioLogMs = now;
+                    }
                 } catch (Exception e) {
                     Log.w(TAG, "audio write failed: " + e.getMessage());
                 }

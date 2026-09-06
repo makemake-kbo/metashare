@@ -47,6 +47,13 @@ PipeWireAudioSource::PipeWireAudioSource(Mode mode, AudioFormat fmt)
 PipeWireAudioSource::~PipeWireAudioSource() { stop(); }
 
 bool PipeWireAudioSource::start(std::string& err) {
+    if (fmt_.sample_rate < 1000 / kAudioFrameMs || fmt_.channels <= 0) {
+        err = "invalid audio format";
+        return false;
+    }
+    buffer_.assign(
+        static_cast<std::size_t>(fmt_.sample_rate / 20) * fmt_.channels, 0);
+    read_pos_ = buffered_samples_ = 0;
     pw_init(nullptr, nullptr);
 
     loop_ = pw_thread_loop_new("metashare-audio", nullptr);
@@ -156,6 +163,7 @@ void PipeWireAudioSource::stop() {
 
     std::lock_guard<std::mutex> lk(mu_);
     buffer_.clear();
+    read_pos_ = buffered_samples_ = 0;
 }
 
 void PipeWireAudioSource::on_process() {
@@ -176,7 +184,8 @@ void PipeWireAudioSource::on_process() {
 
     const auto* src = reinterpret_cast<const std::int16_t*>(
         static_cast<const std::uint8_t*>(d.data) + d.chunk->offset);
-    const std::size_t n_samples = d.chunk->size / sizeof(std::int16_t);
+    std::size_t n_samples =
+        d.chunk->size / sizeof(std::int16_t) / fmt_.channels * fmt_.channels;
 
     const auto now = std::chrono::steady_clock::now().time_since_epoch();
     const std::int64_t pts =
@@ -184,11 +193,26 @@ void PipeWireAudioSource::on_process() {
 
     {
         std::lock_guard<std::mutex> lk(mu_);
-        const std::size_t old = buffer_.size();
-        buffer_.resize(old + n_samples);
-        std::memcpy(buffer_.data() + old, src,
-                    n_samples * sizeof(std::int16_t));
-        pts_usec_ = pts;
+        const std::size_t capacity = buffer_.size();
+        if (n_samples > capacity) {
+            src += n_samples - capacity;
+            n_samples = capacity;
+        }
+        if (buffered_samples_ + n_samples > capacity) {
+            const auto discard = buffered_samples_ + n_samples - capacity;
+            read_pos_ = (read_pos_ + discard) % capacity;
+            buffered_samples_ -= discard;
+        }
+        const auto write_pos = (read_pos_ + buffered_samples_) % capacity;
+        const auto first = std::min(n_samples, capacity - write_pos);
+        std::memcpy(buffer_.data() + write_pos, src,
+                    first * sizeof(std::int16_t));
+        std::memcpy(buffer_.data(), src + first,
+                    (n_samples - first) * sizeof(std::int16_t));
+        buffered_samples_ += n_samples;
+        pts_usec_ =
+            pts - static_cast<std::int64_t>(buffered_samples_ / fmt_.channels) *
+                      1'000'000 / fmt_.sample_rate;
     }
     cv_.notify_one();
 
@@ -197,25 +221,30 @@ void PipeWireAudioSource::on_process() {
 
 int PipeWireAudioSource::next_chunk(const std::int16_t** out,
                                     std::int64_t& pts_usec) {
-    // The Opus encoder consumes exactly fmt_.sample_rate / 50 samples per
-    // channel (20 ms) per packet. We block until that much is buffered, then
-    // hand the caller a contiguous slice from the front of buffer_.
     const std::size_t want =
-        static_cast<std::size_t>(fmt_.sample_rate / 50) * fmt_.channels;
+        static_cast<std::size_t>(fmt_.sample_rate * kAudioFrameMs / 1000) *
+        fmt_.channels;
 
     std::unique_lock<std::mutex> lk(mu_);
     cv_.wait_for(lk, std::chrono::milliseconds(200),
-                 [&] { return buffer_.size() >= want || !running_; });
-    if (!running_ && buffer_.empty()) return -1;
-    if (buffer_.size() < want) return 0;
+                 [&] { return buffered_samples_ >= want || !running_; });
+    if (!running_ && buffered_samples_ == 0) return -1;
+    if (buffered_samples_ < want) return 0;
 
     // Move the head out of the shared buffer into a stable loan. loan_ is a
     // member so subsequent on_process() appends can't invalidate the caller's
     // pointer.
-    loan_.assign(buffer_.begin(), buffer_.begin() + want);
-    buffer_.erase(buffer_.begin(),
-                  buffer_.begin() + static_cast<std::ptrdiff_t>(want));
+    loan_.resize(want);
+    const auto first = std::min(want, buffer_.size() - read_pos_);
+    std::memcpy(loan_.data(), buffer_.data() + read_pos_,
+                first * sizeof(std::int16_t));
+    std::memcpy(loan_.data() + first, buffer_.data(),
+                (want - first) * sizeof(std::int16_t));
+    read_pos_ = (read_pos_ + want) % buffer_.size();
+    buffered_samples_ -= want;
     pts_usec = pts_usec_;
+    pts_usec_ += static_cast<std::int64_t>(want / fmt_.channels) * 1'000'000 /
+                 fmt_.sample_rate;
     *out = loan_.data();
     return static_cast<int>(want);
 }

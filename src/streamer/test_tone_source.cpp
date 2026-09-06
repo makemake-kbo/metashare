@@ -21,9 +21,7 @@ bool TestToneSource::start(std::string& err) {
         err = "test tone: invalid audio format";
         return false;
     }
-    // 20 ms frames: samples per channel = sample_rate / 50. We assume 48 kHz
-    // (== 960) but compute it generally so other rates work too.
-    const int samples_per_channel = fmt_.sample_rate / 50;
+    const int samples_per_channel = fmt_.sample_rate * kAudioFrameMs / 1000;
     buffer_.assign(
         static_cast<std::size_t>(samples_per_channel) * fmt_.channels, 0);
     start_time_ = std::chrono::steady_clock::now();
@@ -34,14 +32,14 @@ void TestToneSource::stop() {}
 
 int TestToneSource::next_chunk(const std::int16_t** out,
                                std::int64_t& pts_usec) {
-    const double fps = 50.0;  // 20 ms frames
+    const double fps = 1000.0 / kAudioFrameMs;
     const auto target =
         start_time_ +
         std::chrono::duration_cast<std::chrono::steady_clock::duration>(
             std::chrono::duration<double>(frame_index_ / fps));
     std::this_thread::sleep_until(target);
 
-    const int samples_per_channel = fmt_.sample_rate / 50;
+    const int samples_per_channel = fmt_.sample_rate * kAudioFrameMs / 1000;
     const double phase_step = 2.0 * M_PI * frequency_ / fmt_.sample_rate;
     const double t0 = static_cast<double>(frame_index_) * samples_per_channel;
     for (int i = 0; i < samples_per_channel; ++i) {

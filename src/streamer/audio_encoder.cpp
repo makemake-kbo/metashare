@@ -61,19 +61,23 @@ bool AudioEncoder::open(const AudioEncoderConfig& cfg, std::string& err) {
     // we'd set AV_CODEC_FLAG_QSCALE here. 96 kbps stereo Opus is transparent
     // for desktop audio in either mode.
     av_opt_set(ctx->priv_data, "vbr", "on", 0);
-    // 20 ms frames, no DTX (DTX creates silence-padding artefacts that break
-    // MediaCodec's Opus decoder on Android, which doesn't expect gap fills).
-    samples_per_frame_ = cfg.format.sample_rate * cfg.frame_ms / 1000;
-    av_opt_set(ctx->priv_data, "frame_size",
-               std::to_string(samples_per_frame_).c_str(), 0);
+    int rc = av_opt_set(ctx->priv_data, "frame_duration",
+                        std::to_string(cfg.frame_ms).c_str(), 0);
+    if (rc < 0) {
+        err = "Opus frame duration: " + av_err(rc);
+        avcodec_free_context(&ctx);
+        return false;
+    }
     av_opt_set(ctx->priv_data, "application", "audio", 0);
 
-    int rc = avcodec_open2(ctx, codec, nullptr);
+    rc = avcodec_open2(ctx, codec, nullptr);
     if (rc < 0) {
         err = std::string("avcodec_open2: ") + av_err(rc);
         avcodec_free_context(&ctx);
         return false;
     }
+
+    samples_per_frame_ = ctx->frame_size;
 
     // Resample only if the encoder insists on a format we don't already feed
     // (the common path is the source producing s16 and the encoder wanting

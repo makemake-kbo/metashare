@@ -4,11 +4,8 @@
 // everywhere in practice — so there's no HW/SW fallback ladder here like the
 // video Encoder has. We just open `libopus` directly.
 //
-// Input is interleaved s16 PCM (what AudioSource produces). libopus in ffmpeg
-// takes planar float (AV_SAMPLE_FMT_FLTP), so we use libswresample to convert
-// in place. Frame size is fixed at 20 ms (960 samples/channel @ 48 kHz) — this
-// is the lowest latency / highest overhead tradeoff that libopus handles
-// natively without extra configuration.
+// Input is interleaved s16 PCM. libswresample converts it only when needed.
+// Capture and encoding default to matching 10 ms chunks.
 
 #pragma once
 
@@ -29,11 +26,11 @@ namespace metashare {
 struct AudioEncoderConfig {
     AudioFormat format;
     int bitrate_kbps = 96;  // Opus default; matches the wire protocol default
-    int frame_ms = 20;      // 2.5/5/10/20/40/60 are valid for libopus
+    int frame_ms = kAudioFrameMs;  // integer durations: 5/10/20/40/60 ms
 };
 
 // Called for each encoded Opus packet. data is valid only for the duration of
-// the call. pts_usec advances per 20 ms Opus frame.
+// the call. pts_usec advances by the configured packet duration.
 using AudioPacketSink = std::function<void(
     const std::uint8_t* data, std::size_t size, std::int64_t pts_usec)>;
 
