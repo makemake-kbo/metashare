@@ -176,6 +176,7 @@ public final class RtpReceiver {
                 jitter.remove(s);
 
                 if (nextExtSeq >= 0 && s != nextExtSeq) {
+                    depack.onGap();
                     // Retransmission didn't make it in time; the current
                     // frame is damaged — ask for a keyframe (throttled).
                     long now = SystemClock.elapsedRealtime();
@@ -190,6 +191,7 @@ public final class RtpReceiver {
                 long ptsUsec = hv.ts * 1_000_000L / videoClockRate;
                 depack.feed(hv.payload, 0, hv.len, hv.marker, ptsUsec,
                             videoSink);
+                if (depack.needsKeyframe()) requestKeyframe();
             }
 
             int n;
@@ -445,112 +447,126 @@ public final class RtpReceiver {
      * B access units, emitting one complete frame per marker bit.
      */
     private static final class VideoDepacketizer {
+        private static final int MAX_FRAME_BYTES = 4 * 1024 * 1024;
         private final boolean h265;
         private final ByteArrayOutputStream frame = new ByteArrayOutputStream(64 * 1024);
-        private final ByteArrayOutputStream fu = new ByteArrayOutputStream(16 * 1024);
-        private boolean fuActive = false;
-        private boolean keyframe = false;
+        private boolean fuActive;
+        private int fuType;
+        private boolean keyframe;
+        private boolean damaged;
+        private boolean pendingGap;
+        private boolean awaitingKeyframe;
+        private long framePts = Long.MIN_VALUE;
 
         VideoDepacketizer(String codec) {
             h265 = "h265".equalsIgnoreCase(codec);
         }
 
+        void onGap() {
+            pendingGap = true;
+            invalidate();
+        }
+
+        boolean needsKeyframe() { return awaitingKeyframe; }
+
+        private void invalidate() {
+            damaged = true;
+            awaitingKeyframe = true;
+            frame.reset();
+            fuActive = false;
+        }
+
         void feed(byte[] data, int off, int len, boolean marker,
                   long ptsUsec, VideoSink sink) {
-            if (len < 1) return;
-            int firstByte = data[off] & 0xFF;
-            if (h265) {
-                int naluType = (firstByte >>> 1) & 0x3F;
-                if (naluType < 48) {
-                    if (fuActive) fuActive = false;  // abandon incomplete FU
-                    addNal(data, off, len);
-                    if (naluType == 19 || naluType == 20) keyframe = true;
-                } else if (naluType == 48) {  // AP
-                    if (fuActive) fuActive = false;
-                    int i = off + 2;
-                    while (i + 2 <= off + len) {
-                        int nlen = ((data[i] & 0xFF) << 8) | (data[i + 1] & 0xFF);
-                        i += 2;
-                        if (nlen == 0 || i + nlen > off + len) break;
-                        addNal(data, i, nlen);
-                        i += nlen;
-                    }
-                } else if (naluType == 49) {  // FU
-                    if (len < 3) return;
-                    boolean s = (data[off + 2] & 0x80) != 0;
-                    boolean e = (data[off + 2] & 0x40) != 0;
-                    int origType = data[off + 2] & 0x3F;
-                    if (s) {
-                        fu.reset();
-                        fu.write(START_CODE, 0, 4);
-                        byte h0 = (byte) ((firstByte & 0x81) | (origType << 1));
-                        fu.write(h0);
-                        fu.write(data[off + 1]);
-                        if (origType == 19 || origType == 20) keyframe = true;
-                        fuActive = true;
-                    }
-                    if (fuActive) {
-                        fu.write(data, off + 3, len - 3);
-                        if (e) {
-                            byte[] nalu = fu.toByteArray();
-                            frame.write(nalu, 0, nalu.length);
-                            fuActive = false;
+            if (framePts != ptsUsec) {
+                // A timestamp change without a marker leaves the previous AU
+                // incomplete. Never join its fragments to the next frame.
+                if (framePts != Long.MIN_VALUE) invalidate();
+                frame.reset();
+                fuActive = false;
+                keyframe = false;
+                damaged = pendingGap;
+                framePts = ptsUsec;
+            }
+            if (pendingGap) damaged = true;
+            pendingGap = false;
+            if (!damaged) {
+                int header = h265 ? 2 : 1;
+                if (len < header || frame.size() + len + 4 > MAX_FRAME_BYTES) {
+                    invalidate();
+                } else {
+                    int first = data[off] & 0xFF;
+                    int type = h265 ? (first >>> 1) & 63 : first & 31;
+                    int apType = h265 ? 48 : 24;
+                    int fragType = h265 ? 49 : 28;
+                    if (type == fragType) {
+                        if (len <= header + 1) {
+                            invalidate();
+                        } else {
+                            int fh = data[off + header] & 0xFF;
+                            boolean start = (fh & 0x80) != 0;
+                            boolean end = (fh & 0x40) != 0;
+                            int original = fh & (h265 ? 63 : 31);
+                            if ((start && (fuActive || end)) ||
+                                    (!start && (!fuActive || original != fuType))) {
+                                invalidate();
+                            } else {
+                                if (start) {
+                                    frame.write(START_CODE, 0, 4);
+                                    frame.write(h265 ? (first & 0x81) | (original << 1)
+                                                     : (first & 0xE0) | original);
+                                    if (h265) frame.write(data[off + 1]);
+                                    keyframe |= isIdr(original);
+                                    fuActive = true;
+                                    fuType = original;
+                                }
+                                frame.write(data, off + header + 1, len - header - 1);
+                                if (end) fuActive = false;
+                            }
                         }
-                    }
-                }
-            } else {
-                int naluType = firstByte & 0x1F;
-                if (naluType >= 1 && naluType <= 23) {
-                    if (fuActive) fuActive = false;  // abandon incomplete FU
-                    addNal(data, off, len);
-                    if (naluType == 5) keyframe = true;
-                } else if (naluType == 24) {  // STAP-A
-                    if (fuActive) fuActive = false;
-                    int i = off + 1;
-                    while (i + 2 <= off + len) {
-                        int nlen = ((data[i] & 0xFF) << 8) | (data[i + 1] & 0xFF);
-                        i += 2;
-                        if (nlen == 0 || i + nlen > off + len) break;
-                        addNal(data, i, nlen);
-                        i += nlen;
-                    }
-                } else if (naluType == 28) {  // FU-A
-                    if (len < 2) return;
-                    boolean s = (data[off + 1] & 0x80) != 0;
-                    boolean e = (data[off + 1] & 0x40) != 0;
-                    int origType = data[off + 1] & 0x1F;
-                    if (s) {
-                        fu.reset();
-                        fu.write(START_CODE, 0, 4);
-                        byte ind = (byte) ((firstByte & 0xE0) | origType);
-                        fu.write(ind);
-                        if (origType == 5) keyframe = true;
-                        fuActive = true;
-                    }
-                    if (fuActive) {
-                        fu.write(data, off + 2, len - 2);
-                        if (e) {
-                            byte[] nalu = fu.toByteArray();
-                            frame.write(nalu, 0, nalu.length);
-                            fuActive = false;
+                    } else if (fuActive) {
+                        invalidate();
+                    } else if (type == apType) {
+                        int i = off + header;
+                        while (i < off + len && !damaged) {
+                            if (i + 2 > off + len) { invalidate(); break; }
+                            int nlen = ((data[i] & 0xFF) << 8) | (data[i + 1] & 0xFF);
+                            i += 2;
+                            if (nlen < header || i + nlen > off + len ||
+                                    frame.size() + nlen + 4 > MAX_FRAME_BYTES) {
+                                invalidate(); break;
+                            }
+                            addNal(data, i, nlen);
+                            i += nlen;
                         }
+                    } else if ((h265 && type < 48) || (!h265 && type >= 1 && type <= 23)) {
+                        addNal(data, off, len);
+                    } else {
+                        invalidate();
                     }
                 }
             }
-
             if (marker) {
-                fuActive = false;  // frame boundary — abandon any partial FU
-                byte[] annexB = frame.toByteArray();
-                boolean kf = keyframe;
-                frame.reset();
-                keyframe = false;
-                if (annexB.length > 0) {
-                    sink.onFrame(annexB, ptsUsec, kf);
+                if (fuActive) invalidate();
+                if (!damaged && frame.size() > 0 && (!awaitingKeyframe || keyframe)) {
+                    awaitingKeyframe = false;
+                    sink.onFrame(frame.toByteArray(), ptsUsec, keyframe);
                 }
+                frame.reset();
+                fuActive = false;
+                keyframe = false;
+                damaged = false;
+                framePts = Long.MIN_VALUE;
             }
         }
 
+        private boolean isIdr(int type) {
+            return h265 ? type == 19 || type == 20 : type == 5;
+        }
+
         private void addNal(byte[] data, int off, int len) {
+            int type = h265 ? (data[off] >>> 1) & 63 : data[off] & 31;
+            keyframe |= isIdr(type);
             frame.write(START_CODE, 0, 4);
             frame.write(data, off, len);
         }
