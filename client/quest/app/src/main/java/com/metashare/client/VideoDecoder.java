@@ -10,6 +10,7 @@ import android.util.Log;
 import android.view.Surface;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayDeque;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
@@ -17,9 +18,9 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  * Accepts Annex B access units (start codes + NALs, parameter sets in-band) and
  * renders decoded frames directly to the supplied {@link Surface}.
  *
- * <p>Input buffers are recycled asynchronously: {@link #feed} hands a frame to
- * the next free input buffer, or drops it if the decoder has none available
- * (keeps the receive thread from blocking on a slow decoder).
+ * <p>Input buffers are recycled asynchronously. {@link #feed} queues complete
+ * frames within a time and memory bound; codec callbacks submit them as soon
+ * as an input buffer is available.
  */
 public final class VideoDecoder {
 
@@ -35,10 +36,27 @@ public final class VideoDecoder {
         void request();
     }
 
-    // A keyframe (IDR) is the decoder's only resync point and IDRs are rare, so
-    // when no input buffer is free we wait briefly for one rather than dropping
-    // it outright. Bounded so a wedged decoder can't hang the receive thread.
-    private static final long KEYFRAME_WAIT_MS = 40;
+    private static final long INPUT_BUDGET_MS = 40;
+    private static final int MAX_PENDING_FRAMES = 4;
+    private static final int MAX_PENDING_BYTES = 4 * 1024 * 1024;
+    private final Object inputLock = new Object();
+    private final ArrayDeque<PendingFrame> pendingInputs = new ArrayDeque<>();
+    private final Runnable drainInputsTask = this::drainPendingInputs;
+    private int pendingBytes;
+    // A queued IDR opens the dependency chain; any dropped input closes it.
+    private boolean inputChainReady;
+
+    private static final class PendingFrame {
+        final byte[] data;
+        final long ptsUsec;
+        final boolean keyframe;
+        final long queuedMs = SystemClock.uptimeMillis();
+        PendingFrame(byte[] data, long ptsUsec, boolean keyframe) {
+            this.data = data;
+            this.ptsUsec = ptsUsec;
+            this.keyframe = keyframe;
+        }
+    }
 
     // Client-side playout (dejitter) cushion. Decoded output used to be released
     // ASAP, so any arrival/decode timing variance — which Mutter's damage-driven
@@ -67,15 +85,6 @@ public final class VideoDecoder {
     private final ConcurrentLinkedQueue<Integer> freeInputs = new ConcurrentLinkedQueue<>();
     private volatile boolean firstFrameDone = false;
     private volatile boolean released = false;
-    // The HEVC decoder is configured without codec-specific data, so it needs
-    // the parameter sets (VPS/SPS/PPS) that ride in-band with each IDR before it
-    // can decode anything. Until the first keyframe arrives we must NOT feed it
-    // inter frames: their slices reference parameter sets it doesn't have yet,
-    // which the firmware rejects as CONFIG_FLAG_MISSING and can wedge the
-    // decoder permanently. Starts true (nothing decodable yet); cleared once a
-    // keyframe is queued. The session sends a PLI at start and the streamer
-    // emits periodic IDRs, so the gate clears within ~one keyframe interval.
-    private volatile boolean awaitingKeyframe = true;
     private Listener listener;
     private volatile KeyframeRequester keyframeRequester;
 
@@ -102,7 +111,7 @@ public final class VideoDecoder {
     // good — it errored while the surface was momentarily invalid (so recover()
     // had to defer), or a shared hardware instance stalled. Nothing re-inits us
     // mid-session, so without this the decoder drops every keyframe for lack of a
-    // buffer, awaitingKeyframe never clears, and it PLI-loops on a frozen picture
+    // buffer, the input gate never clears, and it PLI-loops on a frozen picture
     // forever. Two signals drive recovery: consecutive keyframes we could not
     // queue (codec isn't recycling buffers), and a deferred recover() waiting for
     // the surface to come back.
@@ -197,7 +206,7 @@ public final class VideoDecoder {
         }
         try {
             freeInputs.clear();
-            awaitingKeyframe = true;   // don't feed until parameter sets return
+            synchronized (inputLock) { clearPendingInputs(); }
             firstFrameDone = false;
             haveAnchor = false;        // new IDR re-anchors the playout timeline
             lastRenderNs = 0;          // and restarts the forward-only clock
@@ -219,7 +228,9 @@ public final class VideoDecoder {
     private final MediaCodec.Callback callback = new MediaCodec.Callback() {
         @Override
         public void onInputBufferAvailable(MediaCodec c, int index) {
+            if (released || recovering) return;
             freeInputs.add(index);
+            drainPendingInputs();
         }
 
         @Override
@@ -267,7 +278,7 @@ public final class VideoDecoder {
         public void onError(MediaCodec c, MediaCodec.CodecException e) {
             // Re-arm the gate: whatever comes next, don't feed inter frames until
             // a keyframe re-establishes decodable state.
-            awaitingKeyframe = true;
+            synchronized (inputLock) { clearPendingInputs(); }
             Log.e(TAG, "codec error: " + e.getErrorCode() + " " + e.getMessage()
                     + " recoverable=" + e.isRecoverable()
                     + " transient=" + e.isTransient());
@@ -322,80 +333,93 @@ public final class VideoDecoder {
         return targetNs;
     }
 
-    /**
-     * Feed one Annex B access unit (pts in microseconds). If the decoder has no
-     * free input buffer it is falling behind (common when several HEVC streams
-     * share the Quest's decoder); we drop this frame and keep going rather than
-     * block the receive thread. Dropping a reference frame causes brief
-     * corruption until the next periodic keyframe, but that is far less
-     * disruptive than trying to "recover" — under a sustained throughput
-     * deficit, requesting a keyframe only makes the backlog worse (an IDR is the
-     * most expensive frame to decode), which spirals into a permanent stall.
-     */
+    /** Hand off a bounded, dependency-preserving queue without waiting on RTP. */
     public void feed(byte[] annexB, long ptsUsec, boolean keyframe) {
-        if (released || codec == null) return;
-        // Gate: drop everything until the first keyframe rebuilds the decoder's
-        // parameter-set state. This is the single most important guard — feeding
-        // pre-IDR slices is what wedges the hardware decoder (CONFIG_FLAG_MISSING
-        // → rejected buffers → permanent black). No keyframe is requested here on
-        // purpose: the session's start-of-stream PLI and the streamer's periodic
-        // IDRs clear the gate, and requesting one per dropped frame would flood
-        // the streamer with expensive IDRs and spiral the whole thing.
-        if (awaitingKeyframe && !keyframe) return;
-        Integer idx = freeInputs.poll();
-        if (idx == null && keyframe) {
-            // Don't drop an IDR on the first empty poll: dropping the sole
-            // resync point strands the whole following GOP on references the
-            // decoder never received, which shows as the picture "looping"
-            // between stale frames until the next IDR. On the Quest's shared
-            // HEVC decoder one stream's IDR transiently starves the others'
-            // input buffers exactly when their own IDR lands, so a short wait
-            // almost always recovers a buffer. Inter frames still drop below.
-            idx = awaitInputBuffer(KEYFRAME_WAIT_MS);
+        if (released || recovering || codec == null) return;
+        synchronized (inputLock) {
+            PendingFrame oldest = pendingInputs.peekFirst();
+            if (pendingInputs.size() >= MAX_PENDING_FRAMES ||
+                    pendingBytes + annexB.length > MAX_PENDING_BYTES ||
+                    (oldest != null && SystemClock.uptimeMillis() - oldest.queuedMs >= INPUT_BUDGET_MS)) {
+                dropPendingInputs();
+            }
+            if (annexB.length > MAX_PENDING_BYTES) return;
+            if (!inputChainReady && !keyframe) return;
+            inputChainReady = true;
+            pendingInputs.addLast(new PendingFrame(annexB, ptsUsec, keyframe));
+            pendingBytes += annexB.length;
+            cbHandler.removeCallbacks(drainInputsTask);
+            cbHandler.post(drainInputsTask);
         }
-        if (idx == null) {  // decoder behind — drop and keep flowing
+    }
+
+    // Called with inputLock held. Codec work remains on the callback thread.
+    private void clearPendingInputs() {
+        pendingInputs.clear();
+        pendingBytes = 0;
+        inputChainReady = false;
+    }
+
+    private void dropPendingInputs() {
+        boolean lostKeyframe = false;
+        for (PendingFrame pending : pendingInputs) {
             diagDrops++;
-            if (!keyframe) diagInterDrops++;
-            maybeLogDiag();
-            if (keyframe) {
-                // No input buffer for a keyframe even after the wait means the
-                // codec isn't recycling buffers — it is wedged (an earlier error
-                // whose recovery had to defer on an invalid surface, or a stalled
-                // shared instance). Dropping it only perpetuates the awaiting-
-                // keyframe PLI loop on a frozen picture, so once a couple of
-                // consecutive keyframes go undecodable, rebuild the codec.
-                if (++keyframeDropStreak >= WEDGE_RESET_AFTER_KEYFRAME_DROPS
-                        && !recovering) {
-                    Log.w(TAG, "keyframe undecodable x" + keyframeDropStreak
-                            + " — codec wedged, forcing reset");
-                    recovering = true;
-                    keyframeDropStreak = 0;
-                    cbHandler.post(this::recover);
-                }
-                // Also ask the streamer for a fresh IDR (RtpReceiver throttles
-                // these) so a resync point is inbound the moment we can take it.
-                if (keyframeRequester != null) keyframeRequester.request();
-            }
-            return;
+            if (pending.keyframe) lostKeyframe = true;
+            else diagInterDrops++;
         }
-        try {
-            ByteBuffer buf = codec.getInputBuffer(idx);
-            int cap = buf.capacity();
-            if (annexB.length > cap) {
-                codec.queueInputBuffer(idx, 0, 0, ptsUsec, 0);
-                return;
+        clearPendingInputs();
+        if (lostKeyframe && ++keyframeDropStreak >= WEDGE_RESET_AFTER_KEYFRAME_DROPS && !recovering) {
+            recovering = true;
+            cbHandler.post(this::recover);
+        }
+        // Post feedback too: feed() never waits for codec buffers or socket I/O.
+        cbHandler.post(() -> {
+            if (!released && keyframeRequester != null) keyframeRequester.request();
+        });
+    }
+
+    private void drainPendingInputs() {
+        while (!released && !recovering) {
+            PendingFrame pending;
+            Integer idx;
+            synchronized (inputLock) {
+                cbHandler.removeCallbacks(drainInputsTask);
+                pending = pendingInputs.peekFirst();
+                if (pending == null) return;
+                long remaining = INPUT_BUDGET_MS - (SystemClock.uptimeMillis() - pending.queuedMs);
+                if (remaining <= 0) {
+                    dropPendingInputs();
+                    return;
+                }
+                idx = freeInputs.poll();
+                if (idx == null) {
+                    // Input callbacks wake this immediately; the timer only
+                    // expires stale work if the codec stops returning buffers.
+                    cbHandler.postDelayed(drainInputsTask, remaining);
+                    return;
+                }
+                pendingInputs.removeFirst();
+                pendingBytes -= pending.data.length;
             }
-            buf.clear();
-            buf.put(annexB);
-            int flags = keyframe ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
-            codec.queueInputBuffer(idx, 0, annexB.length, ptsUsec, flags);
-            latestQueuedPtsUsec = ptsUsec;
-            if (keyframe) awaitingKeyframe = false;  // parameter sets now in
-            keyframeDropStreak = 0;  // codec is accepting input again
-            diagFed++;
-            maybeLogDiag();
-        } catch (Exception e) {
-            Log.w(TAG, "feed failed: " + e.getMessage());
+            try {
+                ByteBuffer buf = codec.getInputBuffer(idx);
+                if (buf == null || pending.data.length > buf.capacity()) {
+                    codec.queueInputBuffer(idx, 0, 0, pending.ptsUsec, 0);
+                    synchronized (inputLock) { dropPendingInputs(); }
+                    continue;
+                }
+                buf.clear();
+                buf.put(pending.data);
+                int flags = pending.keyframe ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
+                codec.queueInputBuffer(idx, 0, pending.data.length, pending.ptsUsec, flags);
+                latestQueuedPtsUsec = pending.ptsUsec;
+                keyframeDropStreak = 0;
+                diagFed++;
+                maybeLogDiag();
+            } catch (Exception e) {
+                synchronized (inputLock) { dropPendingInputs(); }
+                Log.w(TAG, "feed failed: " + e.getMessage());
+            }
         }
     }
 
@@ -441,27 +465,6 @@ public final class VideoDecoder {
         });
     }
 
-    /**
-     * Poll for a free input buffer for up to {@code maxWaitMs}, returning null if
-     * none frees up in time (or we're torn down). Runs on the receive thread; the
-     * free-buffer callback fires on the codec's own thread, so this can't deadlock.
-     */
-    private Integer awaitInputBuffer(long maxWaitMs) {
-        long deadline = SystemClock.uptimeMillis() + maxWaitMs;
-        Integer idx;
-        while ((idx = freeInputs.poll()) == null) {
-            if (released || codec == null) return null;
-            if (SystemClock.uptimeMillis() >= deadline) return null;
-            try {
-                Thread.sleep(2);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return null;
-            }
-        }
-        return idx;
-    }
-
     private void maybeLogDiag() {
         long now = SystemClock.uptimeMillis();
         if (diagLastLogMs == 0) { diagLastLogMs = now; return; }
@@ -476,6 +479,10 @@ public final class VideoDecoder {
 
     public void release() {
         released = true;
+        synchronized (inputLock) {
+            clearPendingInputs();
+            if (cbHandler != null) cbHandler.removeCallbacks(drainInputsTask);
+        }
         freeInputs.clear();
         if (codec != null) {
             try {
