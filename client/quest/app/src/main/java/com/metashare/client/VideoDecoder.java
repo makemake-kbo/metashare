@@ -1,6 +1,7 @@
 package com.metashare.client;
 
 import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -154,6 +155,10 @@ public final class VideoDecoder {
         MediaFormat fmt = MediaFormat.createVideoFormat(mime,
                 Math.max(1, width), Math.max(1, height));
         fmt.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 4 * 1024 * 1024);
+        if (codec.getCodecInfo().getCapabilitiesForType(mime).isFeatureSupported(
+                MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency)) {
+            fmt.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
+        }
         return fmt;
     }
 
