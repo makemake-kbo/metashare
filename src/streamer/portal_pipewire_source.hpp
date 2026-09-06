@@ -103,10 +103,8 @@ class PortalPipeWireSource final : public FrameSource, public InputSink {
     // Count injection failures; disables remote input after repeated errors.
     void input_error(const char* what);
 
-    // Copy the current front_ into the consumer-owned out_ and hand it back.
-    // Caller must hold mu_. Returns 1 on success, 0 if there is nothing to
-    // deliver yet or the staging copy failed. Shared by next_frame() (after its
-    // blocking wait) and latest_frame() (non-blocking).
+    // Rotate the latest captured frame into consumer ownership. Caller holds
+    // mu_; shared by blocking and nonblocking pulls.
     int deliver_front_locked(AVFrame** out, std::int64_t& pts_usec);
 
     SourceFormat fmt_{};
@@ -123,12 +121,9 @@ class PortalPipeWireSource final : public FrameSource, public InputSink {
     int negotiated_fmt_ = -1;  // AVPixelFormat once a format is negotiated
     int stride_ = 0;
 
-    // Double buffer: PipeWire fills back_, next_frame() consumes front_.
-    // out_ is a third, consumer-owned staging buffer that the PipeWire thread
-    // never touches: next_frame() copies front_ into it under mu_ and returns
-    // it, so the frame handed to the encoder stays stable until the next call
-    // even when PipeWire delivers a burst of new frames (as VIRTUAL monitors
-    // do). Without it the encoder can read a buffer being overwritten -> tears.
+    // Triple buffer: PipeWire writes back_ and publishes front_. The consumer
+    // swaps front_ with out_ under mu_, retaining exclusive ownership until
+    // its next pull. No second full-frame copy is needed.
     std::mutex mu_;
     std::condition_variable cv_;
     AVFrame* front_ = nullptr;

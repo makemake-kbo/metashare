@@ -510,7 +510,7 @@ void PortalPipeWireSource::on_process() {
     struct spa_buffer* sbuf = b->buffer;
     if (sbuf->n_datas >= 1 && sbuf->datas[0].data && negotiated_fmt_ >= 0) {
         std::lock_guard<std::mutex> lk(mu_);
-        if (back_) {
+        if (back_ && av_frame_make_writable(back_) >= 0) {
             const auto& d = sbuf->datas[0];
             const int src_stride =
                 d.chunk->stride ? d.chunk->stride : back_->linesize[0];
@@ -669,10 +669,8 @@ void PortalPipeWireSource::stop() {
 int PortalPipeWireSource::deliver_front_locked(AVFrame** out,
                                                std::int64_t& pts_usec) {
     if (!front_) return 0;
-    // Copy into out_ (which on_process() never touches) so the returned frame
-    // stays valid until the next call, per the FrameSource contract — the
-    // PipeWire thread may swap and overwrite front_/back_ right after we
-    // return.
+    // Rotate ownership: out_ stays exclusively with the consumer until its
+    // next pull. The old out_ becomes a spare for the capture thread.
     if (!out_ || out_->width != front_->width ||
         out_->height != front_->height || out_->format != front_->format) {
         if (out_) av_frame_free(&out_);
@@ -686,8 +684,7 @@ int PortalPipeWireSource::deliver_front_locked(AVFrame** out,
             return 0;
         }
     }
-    if (av_frame_make_writable(out_) < 0) return 0;
-    av_frame_copy(out_, front_);
+    std::swap(out_, front_);
     *out = out_;
     pts_usec = pts_usec_;
     return 1;
