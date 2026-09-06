@@ -43,7 +43,8 @@ public final class RtpReceiver {
     }
 
     private static final byte[] START_CODE = {0, 0, 0, 1};
-    private static final int JITTER_MAX = 32;  // packets held for reordering
+    private static final int JITTER_MAX = 512;  // memory bound; time controls playout
+    private static final long REPAIR_BUDGET_MS = 30;
     // Largest gap we try to repair with NACKs; anything bigger is hopeless
     // (e.g. a long stall) and cheaper to fix with a single PLI + keyframe.
     private static final int NACK_MAX_GAP = 256;
@@ -108,7 +109,7 @@ public final class RtpReceiver {
         socket = new DatagramSocket(null);
         socket.setReuseAddress(true);
         socket.bind(new InetSocketAddress(localPort));
-        socket.setSoTimeout(200);
+        socket.setSoTimeout(10);  // service gap expiry even when RTP goes idle
         // Large frames (4K) produce 100+ RTP packet bursts; the default
         // ~208 KB kernel buffer overflows during these bursts.
         socket.setReceiveBufferSize(4 * 1024 * 1024);
@@ -163,8 +164,37 @@ public final class RtpReceiver {
         DatagramPacket pkt = new DatagramPacket(buf, buf.length);
 
         while (running) {
+            // Expire repairs on time, including during socket timeouts.
+            while (!jitter.isEmpty()) {
+                Map.Entry<Long, HeldVideo> e = jitter.firstEntry();
+                long s = e.getKey();
+                boolean due = (nextExtSeq < 0) || (s == nextExtSeq) ||
+                              (jitter.size() > JITTER_MAX) ||
+                              (SystemClock.elapsedRealtime() - e.getValue().receivedMs
+                                      >= REPAIR_BUDGET_MS);
+                if (!due) break;
+                jitter.remove(s);
+
+                if (nextExtSeq >= 0 && s != nextExtSeq) {
+                    // Retransmission didn't make it in time; the current
+                    // frame is damaged — ask for a keyframe (throttled).
+                    long now = SystemClock.elapsedRealtime();
+                    if (now - lastAutoPli > 500) {
+                        lastAutoPli = now;
+                        sendPli();
+                    }
+                }
+
+                HeldVideo hv = e.getValue();
+                nextExtSeq = s + 1;
+                long ptsUsec = hv.ts * 1_000_000L / videoClockRate;
+                depack.feed(hv.payload, 0, hv.len, hv.marker, ptsUsec,
+                            videoSink);
+            }
+
             int n;
             try {
+                pkt.setLength(buf.length);
                 socket.receive(pkt);
                 n = pkt.getLength();
             } catch (SocketTimeoutException ste) {
@@ -259,32 +289,6 @@ public final class RtpReceiver {
                     jitter.put(ext, new HeldVideo(payload, payloadLen, marker, ts));
                 }
 
-                // Drain in extended-seq order. A gap only stalls delivery
-                // until the retransmission arrives or the window overflows.
-                while (!jitter.isEmpty()) {
-                    Map.Entry<Long, HeldVideo> e = jitter.firstEntry();
-                    long s = e.getKey();
-                    boolean due = (nextExtSeq < 0) || (s == nextExtSeq) ||
-                                  (jitter.size() > JITTER_MAX);
-                    if (!due) break;
-                    jitter.remove(s);
-
-                    if (nextExtSeq >= 0 && s != nextExtSeq) {
-                        // Retransmission didn't make it in time; the current
-                        // frame is damaged — ask for a keyframe (throttled).
-                        long now = SystemClock.elapsedRealtime();
-                        if (now - lastAutoPli > 500) {
-                            lastAutoPli = now;
-                            sendPli();
-                        }
-                    }
-
-                    HeldVideo hv = e.getValue();
-                    nextExtSeq = s + 1;
-                    long ptsUsec = hv.ts * 1_000_000L / videoClockRate;
-                    depack.feed(hv.payload, 0, hv.len, hv.marker, ptsUsec,
-                                videoSink);
-                }
             } else if (ssrc == audioSsrc && pt == audioPt) {
                 long ptsUsec = ts * 1_000_000L / audioClockRate;
                 audioSink.onOpusPacket(data, payloadOff, payloadLen, ptsUsec);
@@ -299,6 +303,7 @@ public final class RtpReceiver {
         final int len;
         final boolean marker;
         final long ts;
+        final long receivedMs = SystemClock.elapsedRealtime();
         HeldVideo(byte[] payload, int len, boolean marker, long ts) {
             this.payload = payload;
             this.len = len;
