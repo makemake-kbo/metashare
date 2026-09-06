@@ -628,7 +628,6 @@ int main(int argc, char** argv) {
                              static_cast<double>(lost) * 100.0);
                 raw->abr_kbps = next;
                 raw->encoder->set_bitrate(next);
-                raw->server->set_pacing_bitrate(next);
             }
         };
         if (!p->server->start(port, err)) {
@@ -662,6 +661,7 @@ int main(int argc, char** argv) {
         raw->thread = std::thread([raw] {
             auto sink = [raw](const std::uint8_t* data, std::size_t size,
                               std::int64_t pts_usec, bool key) {
+                raw->server->set_pacing_bitrate(raw->encoder->bitrate_kbps());
                 raw->server->broadcast_video(data, size, pts_usec, key);
             };
             std::string thread_err;

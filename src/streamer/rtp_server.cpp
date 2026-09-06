@@ -138,6 +138,7 @@ void RtpServer::stop() {
 
 void RtpServer::set_pacing_bitrate(int kbps) {
     std::lock_guard<std::mutex> lk(peer_mu_);
+    if (pacing_kbps_ == kbps) return;
     pacing_kbps_ = kbps;
     if (pacer_) pacer_->set_stream_rate(id_, peer_streaming_ ? kbps : 0);
 }

@@ -71,7 +71,8 @@ class Encoder {
     void force_keyframe() { force_keyframe_.store(true); }
 
     // Request a new target bitrate (thread-safe; applied at the next encode()
-    // by reopening the codec with the same candidate). Drives loss-based
+    // in place where supported, otherwise by reopening the selected codec).
+    // Drives loss-based
     // adaptation from the client's RTCP receiver reports.
     void set_bitrate(int kbps) { pending_bitrate_kbps_.store(kbps); }
 
@@ -79,10 +80,14 @@ class Encoder {
     proto::Codec codec() const { return chosen_codec_; }
     const char* codec_name() const { return chosen_name_; }
     bool using_hardware() const { return chosen_hardware_; }
+    int bitrate_kbps() const {
+        return cfg_.bitrate_kbps;
+    }  // encode thread only
 
   private:
     bool drain(const PacketSink& sink, std::string& err);
-    // Close and reopen the codec at a new bitrate (encode-thread only).
+    // Apply a bitrate change while retaining reusable resources (encode
+    // thread).
     bool reconfigure_bitrate(int kbps, std::string& err);
 
     EncoderConfig cfg_{};

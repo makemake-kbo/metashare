@@ -1,6 +1,7 @@
 #include "encoder.hpp"
 
 #include <cstring>
+#include <cstdio>
 #include <vector>
 
 extern "C" {
@@ -221,20 +222,41 @@ void Encoder::close() {
 }
 
 bool Encoder::reconfigure_bitrate(int kbps, std::string& err) {
-    const proto::Codec prev_codec = chosen_codec_;
-    EncoderConfig cfg = cfg_;
-    cfg.bitrate_kbps = kbps;
-    close();
-    if (!open(cfg, err)) return false;
-    if (chosen_codec_ != prev_codec) {
-        // The same candidate opened moments ago at a different bitrate, so
-        // this should be unreachable — but a codec switch mid-stream would
-        // desync the client (HELLO advertised the old codec), so say so.
-        err = "reopen picked a different codec mid-stream";
+    if (std::strcmp(chosen_name_, "libx264") == 0) {
+        // FFmpeg's x264 wrapper applies ABR changes on the next input frame.
+        ctx_->bit_rate = static_cast<std::int64_t>(kbps) * 1000;
+        cfg_.bitrate_kbps = kbps;
+        return true;
+    }
+
+    // Hardware backends without a public dynamic-rate capability query keep
+    // the selected codec, conversion state, device and upload pool on reopen.
+    AVCodecContext* next = avcodec_alloc_context3(codec_);
+    if (!next) {
+        err = "codec context allocation failed";
         return false;
     }
-    // New codec instance starts with an IDR, but be explicit so the client
-    // can resume decoding immediately.
+    next->width = ctx_->width;
+    next->height = ctx_->height;
+    next->time_base = ctx_->time_base;
+    next->framerate = ctx_->framerate;
+    next->bit_rate = static_cast<std::int64_t>(kbps) * 1000;
+    next->gop_size = ctx_->gop_size;
+    next->max_b_frames = ctx_->max_b_frames;
+    next->flags = ctx_->flags;
+    next->pix_fmt = ctx_->pix_fmt;
+    if (hw_) next->hw_device_ctx = av_buffer_ref(hw_);
+    if (hw_frames_) next->hw_frames_ctx = av_buffer_ref(hw_frames_);
+    int rc = av_opt_copy(next->priv_data, ctx_->priv_data);
+    if (rc >= 0) rc = avcodec_open2(next, codec_, nullptr);
+    if (rc < 0) {
+        err = "reopen selected encoder: " + av_err(rc);
+        avcodec_free_context(&next);
+        return false;
+    }
+    avcodec_free_context(&ctx_);
+    ctx_ = next;
+    cfg_.bitrate_kbps = kbps;
     force_keyframe_.store(true);
     return true;
 }
@@ -246,8 +268,9 @@ bool Encoder::encode(AVFrame* frame, std::int64_t pts_usec,
     if (want_kbps > 0 && want_kbps != cfg_.bitrate_kbps) {
         std::string rerr;
         if (!reconfigure_bitrate(want_kbps, rerr)) {
-            err = "bitrate reconfigure failed: " + rerr;
-            return false;
+            // The previous encoder is still usable if the replacement failed.
+            std::fprintf(stderr, "[encoder] bitrate unchanged: %s\n",
+                         rerr.c_str());
         }
     }
 
