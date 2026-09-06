@@ -46,6 +46,12 @@ std::vector<Candidate> build_candidates(const EncoderConfig& cfg) {
         // rather than software HEVC, since x264 is faster and universally
         // available in our build.)
     }
+    if (cfg.prefer_hardware) {
+        list.push_back(
+            {"h264_vaapi", proto::Codec::kH264, AV_HWDEVICE_TYPE_VAAPI, true});
+        list.push_back(
+            {"h264_nvenc", proto::Codec::kH264, AV_HWDEVICE_TYPE_NONE, true});
+    }
     list.push_back(
         {"libx264", proto::Codec::kH264, AV_HWDEVICE_TYPE_NONE, false});
     return list;
@@ -130,35 +136,34 @@ bool Encoder::open(const EncoderConfig& cfg, std::string& err) {
             ctx->pix_fmt = conv_fmt_for(c.name);
         }
 
-        // Codec-specific low-latency tuning.
+        // Treat latency settings as requirements of a candidate, and report
+        // rejected options instead of silently running with encoder defaults.
         if (ok) {
+            auto set = [&](const char* key, const char* value) {
+                const int rc = av_opt_set(ctx->priv_data, key, value, 0);
+                if (rc >= 0) return true;
+                step_err = std::string("option ") + key + ": " + av_err(rc);
+                std::fprintf(stderr, "[encoder] %s: %s\n", c.name,
+                             step_err.c_str());
+                return false;
+            };
             if (std::strcmp(c.name, "libx264") == 0) {
-                av_opt_set(ctx->priv_data, "preset", "ultrafast", 0);
-                av_opt_set(ctx->priv_data, "tune", "zerolatency", 0);
-            } else if (std::strcmp(c.name, "hevc_nvenc") == 0) {
-                av_opt_set(ctx->priv_data, "preset", "p1", 0);  // fastest
-                av_opt_set(ctx->priv_data, "tune", "ull", 0);   // ultra-low-lat
-                av_opt_set(ctx->priv_data, "rc", "cbr", 0);
-                av_opt_set_int(ctx->priv_data, "forced-idr", 1, 0);
-                av_opt_set_int(ctx->priv_data, "delay", 0, 0);
-                av_opt_set_int(ctx->priv_data, "zerolatency", 1, 0);
-                av_opt_set_int(ctx->priv_data, "rc-lookahead", 0, 0);
-            } else if (std::strcmp(c.name, "hevc_vaapi") == 0) {
-                av_opt_set(ctx->priv_data, "rc_mode", "CBR", 0);
-                av_opt_set(ctx->priv_data, "quality", "realtime", 0);
-                // Serialize the encode pipeline: the VAAPI framework defaults
-                // async_depth to 2, keeping a second frame in flight before it
-                // hands back the first frame's packet — ~1 frame (16 ms @60fps)
-                // of pure latency. With no B-frames a single realtime encode is
-                // well under a frame period, so depth 1 costs no throughput
-                // here and gives back that frame of glass-to-glass delay.
-                av_opt_set_int(ctx->priv_data, "async_depth", 1, 0);
+                ok = set("preset", "ultrafast") && set("tune", "zerolatency") &&
+                     set("forced-idr", "1");
+            } else if (std::strstr(c.name, "nvenc")) {
+                ok = set("preset", "p1") && set("tune", "ull") &&
+                     set("rc", "cbr") && set("forced-idr", "1") &&
+                     set("delay", "0") && set("zerolatency", "1") &&
+                     set("rc-lookahead", "0");
+            } else if (std::strstr(c.name, "vaapi")) {
+                ok = set("rc_mode", "CBR") && set("async_depth", "1");
             }
-
-            int rc = avcodec_open2(ctx, codec, nullptr);
-            if (rc < 0) {
-                step_err = std::string("avcodec_open2: ") + av_err(rc);
-                ok = false;
+            if (ok) {
+                int rc = avcodec_open2(ctx, codec, nullptr);
+                if (rc < 0) {
+                    step_err = std::string("avcodec_open2: ") + av_err(rc);
+                    ok = false;
+                }
             }
         }
 
