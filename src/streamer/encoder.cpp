@@ -138,6 +138,7 @@ bool Encoder::open(const EncoderConfig& cfg, std::string& err) {
                 av_opt_set(ctx->priv_data, "preset", "p1", 0);  // fastest
                 av_opt_set(ctx->priv_data, "tune", "ull", 0);   // ultra-low-lat
                 av_opt_set(ctx->priv_data, "rc", "cbr", 0);
+                av_opt_set_int(ctx->priv_data, "forced-idr", 1, 0);
             } else if (std::strcmp(c.name, "hevc_vaapi") == 0) {
                 av_opt_set(ctx->priv_data, "rc_mode", "CBR", 0);
                 av_opt_set(ctx->priv_data, "quality", "realtime", 0);
@@ -275,18 +276,6 @@ bool Encoder::encode(AVFrame* frame, std::int64_t pts_usec,
         enc_in = conv_;
     }
 
-    enc_in->pts = pts_usec;
-
-    // Honor a pending keyframe request (PLI). AV_FRAME_FLAG_KEY asks the
-    // encoder for an IDR on this frame; setting pict_type covers encoders that
-    // only look at the picture type. The flag is cleared once consumed.
-    if (force_keyframe_.exchange(false)) {
-        enc_in->pict_type = AV_PICTURE_TYPE_I;
-#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 2, 100)
-        enc_in->flags |= AV_FRAME_FLAG_KEY;
-#endif
-    }
-
     // VAAPI path: upload the sw frame into a pooled hw surface. We allocate a
     // fresh AVFrame per call (cheap relative to encoding) so we don't have to
     // fight av_frame_unref clearing the hw_frames_ctx back-reference.
@@ -313,9 +302,19 @@ bool Encoder::encode(AVFrame* frame, std::int64_t pts_usec,
             av_frame_free(&hw_up);
             return false;
         }
-        hw_up->pts = pts_usec;
         enc_in = hw_up;
     }
+
+    // Set properties on the submitted frame: a hardware upload copies pixels,
+    // not picture metadata. Reset reused frames after a one-shot PLI request.
+    enc_in->pts = pts_usec;
+    const bool force_keyframe = force_keyframe_.exchange(false);
+    enc_in->pict_type =
+        force_keyframe ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
+#ifdef AV_FRAME_FLAG_KEY
+    enc_in->flags &= ~AV_FRAME_FLAG_KEY;
+    if (force_keyframe) enc_in->flags |= AV_FRAME_FLAG_KEY;
+#endif
 
     int rc = avcodec_send_frame(ctx_, enc_in);
     if (hw_up) av_frame_free(&hw_up);
