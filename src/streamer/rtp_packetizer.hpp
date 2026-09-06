@@ -15,6 +15,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstddef>
 #include <deque>
@@ -130,11 +131,17 @@ class RetransmitBuffer {
 
     // Copy a retained packet into out. Returns false if not retained. A copy
     // (not a pointer) so concurrent record() eviction can't invalidate it.
-    bool get(std::uint16_t seq, Packet& out) const;
+    bool get(std::uint16_t seq, Packet& out,
+             std::chrono::steady_clock::time_point* sent_at = nullptr) const;
+    void clear();
 
   private:
     mutable std::mutex mu_;
-    std::map<std::uint16_t, Packet> packets_;
+    struct SentPacket {
+        Packet packet;
+        std::chrono::steady_clock::time_point sent_at;
+    };
+    std::map<std::uint16_t, SentPacket> packets_;
     // Insertion order for eviction — evicting by lowest seq breaks at the
     // 16-bit wrap (it would evict the *newest* packets).
     std::deque<std::uint16_t> order_;

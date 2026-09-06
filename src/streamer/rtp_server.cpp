@@ -231,6 +231,9 @@ void RtpServer::on_message(const signal::Message& m) {
 void RtpServer::reset_video_queue() {
     std::lock_guard<std::mutex> lk(send_mu_);
     send_q_.clear();
+    repair_q_.clear();
+    video_retx_.clear();
+    audio_retx_.clear();
     queued_packets_ = 0;
     ++send_generation_;
     awaiting_keyframe_ = true;
@@ -253,6 +256,8 @@ void RtpServer::broadcast_video(const std::uint8_t* data, std::size_t size,
              std::chrono::steady_clock::now() >= send_q_.front().deadline) ||
             queued_packets_ + packets.size() > kMaxQueuedPackets) {
             send_q_.clear();
+            repair_q_.clear();
+            video_retx_.clear();
             queued_packets_ = 0;
             ++send_generation_;  // cancels the frame already being paced
             awaiting_keyframe_ = true;
@@ -277,14 +282,21 @@ void RtpServer::sender_loop() {
         VideoFrame frame;
         {
             std::unique_lock<std::mutex> lk(send_mu_);
-            send_cv_.wait(lk, [this] { return !running_ || !send_q_.empty(); });
+            send_cv_.wait(lk, [this] {
+                return !running_ || !send_q_.empty() || !repair_q_.empty();
+            });
             if (!running_) break;
+            lk.unlock();
+            send_repairs();
+            lk.lock();
+            if (send_q_.empty()) continue;
             frame = std::move(send_q_.front());
             send_q_.pop_front();
             queued_packets_ -= frame.packets.size();
         }
         for (const auto& pkt : frame.packets) {
             if (!running_) break;
+            send_repairs();
             const bool paced =
                 !pacer_ || pacer_->consume(pkt.size(), frame.deadline);
             bool request_keyframe = false;
@@ -304,6 +316,8 @@ void RtpServer::sender_loop() {
                 if (!sent) {
                     // A partial access unit invalidates every dependent frame.
                     send_q_.clear();
+                    repair_q_.clear();
+                    video_retx_.clear();
                     queued_packets_ = 0;
                     ++send_generation_;
                     awaiting_keyframe_ = true;
@@ -326,26 +340,47 @@ void RtpServer::sender_loop() {
     }
 }
 
+void RtpServer::send_repairs() {
+    // Limit repair priority so repeated NACKs cannot starve current video.
+    for (int i = 0; i < 4 && running_; ++i) {
+        RepairPacket repair;
+        {
+            std::lock_guard<std::mutex> lk(send_mu_);
+            if (repair_q_.empty()) return;
+            repair = std::move(repair_q_.front());
+            repair_q_.pop_front();
+        }
+        if (pacer_ && !pacer_->consume(repair.packet.size(), repair.deadline))
+            continue;
+        std::scoped_lock lk(peer_mu_, send_mu_);
+        if (!peer_streaming_ || repair.generation != send_generation_ ||
+            std::chrono::steady_clock::now() >= repair.deadline)
+            continue;
+        const auto& p = repair.packet;
+        if (::sendto(udp_fd_, p.data(), p.size(), MSG_DONTWAIT,
+                     reinterpret_cast<sockaddr*>(&peer_udp_),
+                     sizeof(peer_udp_)) == static_cast<ssize_t>(p.size()) &&
+            repair.video) {
+            video_retx_count_.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+}
+
 void RtpServer::broadcast_audio(std::uint32_t /*channel_id*/,
                                 const std::uint8_t* data, std::size_t size,
                                 std::int64_t pts_usec) {
-    sockaddr_in dst{};
-    {
-        std::lock_guard<std::mutex> lk(peer_mu_);
-        if (!peer_streaming_) return;
-        dst = peer_udp_;
-    }
-
+    std::lock_guard<std::mutex> lk(peer_mu_);
+    if (!peer_streaming_) return;
     std::vector<rtp::Packet> packets;
     audio_packer_->packetize(data, size, pts_usec, packets);
     for (auto& pkt : packets) {
+        if (::sendto(udp_fd_, pkt.data(), pkt.size(), MSG_DONTWAIT,
+                     reinterpret_cast<sockaddr*>(&peer_udp_),
+                     sizeof(peer_udp_)) != static_cast<ssize_t>(pkt.size()))
+            continue;
         audio_retx_.record(rtp::seq_of(pkt), pkt);
         audio_pkts_.fetch_add(1, std::memory_order_relaxed);
         audio_octets_.fetch_add(pkt.size(), std::memory_order_relaxed);
-        ::sendto(udp_fd_, pkt.data(), pkt.size(), 0,
-                 reinterpret_cast<sockaddr*>(&dst), sizeof(dst));
-    }
-    if (!packets.empty()) {
         audio_last_ts_.store(
             static_cast<std::uint32_t>(
                 (static_cast<std::uint64_t>(pts_usec) * rtp::kOpusClockRate) /
@@ -361,7 +396,7 @@ void RtpServer::nack_loop() {
     timeval tv{0, 200000};
     ::setsockopt(udp_fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     auto last_sr = std::chrono::steady_clock::now();
-    std::uint64_t prev_pkts = 0, prev_retx = 0, prev_drops = 0;
+    std::uint64_t prev_pkts = 0, prev_retx = 0, prev_drops = 0, prev_nacks = 0;
     while (running_) {
         socklen_t flen = sizeof(from);
         ssize_t n = ::recvfrom(udp_fd_, buf.data(), buf.size(), 0,
@@ -408,6 +443,18 @@ void RtpServer::nack_loop() {
                     static_cast<double>(
                         last_loss_.load(std::memory_order_relaxed)) *
                         100.0);
+                const auto requested = video_nack_requests_ - prev_nacks;
+                const float repair_fraction = std::min(
+                    1.0f, static_cast<float>(requested) /
+                              std::max<std::uint64_t>(1, pkts - prev_pkts));
+                float pressure = std::max(last_loss_.load(), repair_fraction);
+                if (drops > prev_drops) pressure = std::max(pressure, 0.1f);
+                if (on_loss_report &&
+                    (now - last_rr_ < std::chrono::seconds(2) ||
+                     requested > 0 || drops > prev_drops)) {
+                    on_loss_report(pressure);
+                }
+                prev_nacks = video_nack_requests_;
                 prev_pkts = pkts;
                 prev_retx = retx;
                 prev_drops = drops;
@@ -417,7 +464,14 @@ void RtpServer::nack_loop() {
 }
 
 void RtpServer::handle_rtcp(const std::uint8_t* data, std::size_t size,
-                            const sockaddr_in& /*from*/) {
+                            const sockaddr_in& from) {
+    {
+        std::lock_guard<std::mutex> lk(peer_mu_);
+        if (!peer_streaming_ ||
+            from.sin_addr.s_addr != peer_udp_.sin_addr.s_addr ||
+            from.sin_port != peer_udp_.sin_port)
+            return;
+    }
     // Minimal RTCP feedback parser (RFC 4585). We service NACK (RTPFB, PT=205,
     // FMT=1) and PLI (PSFB, PT=206, FMT=1).
     if (size < 8) return;
@@ -443,17 +497,11 @@ void RtpServer::handle_rtcp(const std::uint8_t* data, std::size_t size,
     if (pt == 205 && fmt == 1) {
         // NACK. media SSRC at offset 8 selects the retransmit buffer.
         if (pkt_len < 16) return;  // header (12) + at least one FCI (4)
-        std::fprintf(stderr, "[rtp] NACK received\n");
         std::uint32_t media_ssrc = (static_cast<std::uint32_t>(data[8]) << 24) |
                                    (data[9] << 16) | (data[10] << 8) | data[11];
         rtp::RetransmitBuffer* buf = nullptr;
-        sockaddr_in dst{};
-        {
-            std::lock_guard<std::mutex> lk(peer_mu_);
-            if (!peer_streaming_) return;
-            dst = peer_udp_;
-        }
-        if (media_ssrc == video_ssrc_)
+        const bool video = media_ssrc == video_ssrc_;
+        if (video)
             buf = &video_retx_;
         else if (media_ssrc == audio_ssrc_)
             buf = &audio_retx_;
@@ -463,12 +511,23 @@ void RtpServer::handle_rtcp(const std::uint8_t* data, std::size_t size,
             std::uint16_t pid = (data[off] << 8) | data[off + 1];
             std::uint16_t blp = (data[off + 2] << 8) | data[off + 3];
             auto retransmit = [&](std::uint16_t seq) {
+                if (video) ++video_nack_requests_;
+                std::scoped_lock lk(peer_mu_, send_mu_);
+                if (!peer_streaming_ || repair_q_.size() >= 64) return;
+                for (const auto& queued : repair_q_)
+                    if (queued.video == video &&
+                        rtp::seq_of(queued.packet) == seq)
+                        return;
                 rtp::Packet p;
-                if (buf->get(seq, p)) {
-                    if (pacer_) pacer_->consume(p.size());
-                    video_retx_count_.fetch_add(1, std::memory_order_relaxed);
-                    ::sendto(udp_fd_, p.data(), p.size(), 0,
-                             reinterpret_cast<sockaddr*>(&dst), sizeof(dst));
+                std::chrono::steady_clock::time_point sent_at;
+                const auto now = std::chrono::steady_clock::now();
+                if (buf->get(seq, p, &sent_at) && now - sent_at < kMaxSendAge) {
+                    repair_q_.push_back(
+                        {std::move(p),
+                         std::min(sent_at + kMaxSendAge,
+                                  now + std::chrono::milliseconds(20)),
+                         send_generation_, video});
+                    send_cv_.notify_one();
                 }
             };
             retransmit(pid);
@@ -493,7 +552,7 @@ void RtpServer::handle_rtcp(const std::uint8_t* data, std::size_t size,
             const float fraction_lost =
                 static_cast<float>(data[off + 4]) / 256.0f;
             last_loss_.store(fraction_lost, std::memory_order_relaxed);
-            if (on_loss_report) on_loss_report(fraction_lost);
+            last_rr_ = std::chrono::steady_clock::now();
         }
         return;
     }

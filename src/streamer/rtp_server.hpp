@@ -85,8 +85,10 @@ class RtpServer {
     // Encoder::force_keyframe() from the owning pipeline.
     std::function<void()> on_keyframe_request;
 
-    // Fired (from the RTCP thread, ~1/s) with the video fraction-lost from
-    // the client's Receiver Reports, 0.0..1.0. Drives bitrate adaptation.
+    // Congestion pressure (0..1, RTCP thread, ~1/s): receiver loss, repair
+    // demand and expired send queues. Normal receiver-report semantics remain
+    // unchanged; repaired packets must not make congestion look like a clean
+    // link.
     std::function<void(float)> on_loss_report;
 
     // Fired (from the signaling thread) for each decoded INPUT event from the
@@ -107,6 +109,7 @@ class RtpServer {
     // on its own thread so the token-bucket sleep never blocks the capture
     // thread that calls broadcast_video().
     void sender_loop();
+    void send_repairs();
     void handle_rtcp(const std::uint8_t* data, std::size_t size,
                      const sockaddr_in& from);
     // Build + send an RTCP Sender Report for one SSRC to the client.
@@ -140,6 +143,13 @@ class RtpServer {
     };
     static constexpr auto kMaxSendAge = std::chrono::milliseconds(100);
     std::deque<VideoFrame> send_q_;
+    struct RepairPacket {
+        rtp::Packet packet;
+        std::chrono::steady_clock::time_point deadline;
+        std::uint64_t generation;
+        bool video;
+    };
+    std::deque<RepairPacket> repair_q_;
     std::size_t queued_packets_ = 0;
     std::uint64_t send_generation_ = 0;  // guarded by send_mu_
     bool awaiting_keyframe_ = true;
@@ -172,6 +182,8 @@ class RtpServer {
     int id_ = 0;
     std::atomic<std::uint64_t> video_retx_count_{0};
     std::atomic<float> last_loss_{0.0f};
+    std::uint64_t video_nack_requests_ = 0;  // RTCP thread only
+    std::chrono::steady_clock::time_point last_rr_{};
 };
 
 }  // namespace metashare

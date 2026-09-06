@@ -623,7 +623,7 @@ int main(int argc, char** argv) {
             if (next != raw->abr_kbps) {
                 std::fprintf(stderr,
                              "[monitor %d] bitrate %d -> %d kbps "
-                             "(loss %.1f%%)\n",
+                             "(pressure %.1f%%)\n",
                              raw->index, raw->abr_kbps, next,
                              static_cast<double>(lost) * 100.0);
                 raw->abr_kbps = next;

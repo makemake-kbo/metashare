@@ -209,7 +209,8 @@ void OpusRtpPacketizer::packetize(const std::uint8_t* data, std::size_t size,
 
 void RetransmitBuffer::record(std::uint16_t seq, Packet packet) {
     std::lock_guard<std::mutex> lk(mu_);
-    auto [it, inserted] = packets_.insert_or_assign(seq, std::move(packet));
+    auto [it, inserted] = packets_.insert_or_assign(
+        seq, SentPacket{std::move(packet), std::chrono::steady_clock::now()});
     if (inserted) order_.push_back(seq);
     while (order_.size() > capacity_) {
         packets_.erase(order_.front());
@@ -217,12 +218,21 @@ void RetransmitBuffer::record(std::uint16_t seq, Packet packet) {
     }
 }
 
-bool RetransmitBuffer::get(std::uint16_t seq, Packet& out) const {
+bool RetransmitBuffer::get(
+    std::uint16_t seq, Packet& out,
+    std::chrono::steady_clock::time_point* sent_at) const {
     std::lock_guard<std::mutex> lk(mu_);
     auto it = packets_.find(seq);
     if (it == packets_.end()) return false;
-    out = it->second;
+    out = it->second.packet;
+    if (sent_at) *sent_at = it->second.sent_at;
     return true;
+}
+
+void RetransmitBuffer::clear() {
+    std::lock_guard<std::mutex> lk(mu_);
+    packets_.clear();
+    order_.clear();
 }
 
 }  // namespace metashare::rtp
