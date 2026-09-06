@@ -79,6 +79,7 @@ class RtpServer {
     // Optional host-wide pacer; when set, video sends (including
     // retransmissions) are throttled through it. Must outlive this server.
     void set_pacer(Pacer* pacer) { pacer_ = pacer; }
+    void set_pacing_bitrate(int kbps);
 
     // Fired when a client sends a PLI / keyframe request. Wire this to
     // Encoder::force_keyframe() from the owning pipeline.
@@ -96,6 +97,7 @@ class RtpServer {
   private:
     void on_connect(const sockaddr_in& peer);
     void reset_video_queue();
+    void on_disconnect();
     void on_message(const signal::Message& m);
     void send_hello();
     // Open the UDP socket (once) and start the NACK receiver thread.
@@ -145,6 +147,7 @@ class RtpServer {
         0};  // packets shed on queue overflow
 
     mutable std::mutex peer_mu_;
+    int pacing_kbps_ = 0;  // guarded by peer_mu_
     bool peer_streaming_ = false;
     sockaddr_in peer_udp_{};  // where to send RTP (client ip:port)
 

@@ -47,6 +47,9 @@ class Server {
     // True if a client is currently connected.
     bool has_client() const;
 
+    // Called once after every client read loop, including EOF and timeout.
+    OnDisconnect on_disconnect;
+
     // Send a message to the connected client. Returns false if no client
     // is connected or the write fails.
     bool send(const Message& m);

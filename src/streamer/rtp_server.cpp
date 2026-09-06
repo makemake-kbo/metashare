@@ -80,6 +80,7 @@ bool RtpServer::start(std::uint16_t signaling_port, std::string& err) {
     nack_thread_ = std::thread([this] { nack_loop(); });
     sender_thread_ = std::thread([this] { sender_loop(); });
 
+    signaling_.on_disconnect = [this] { on_disconnect(); };
     if (!signaling_.start(
             signaling_port,
             [this](const sockaddr_in& peer) { on_connect(peer); },
@@ -132,8 +133,23 @@ void RtpServer::stop() {
         ::close(udp_fd_);
         udp_fd_ = -1;
     }
+    on_disconnect();
+}
+
+void RtpServer::set_pacing_bitrate(int kbps) {
     std::lock_guard<std::mutex> lk(peer_mu_);
-    peer_streaming_ = false;
+    pacing_kbps_ = kbps;
+    if (pacer_) pacer_->set_stream_rate(id_, peer_streaming_ ? kbps : 0);
+}
+
+void RtpServer::on_disconnect() {
+    {
+        std::lock_guard<std::mutex> lk(peer_mu_);
+        peer_streaming_ = false;
+        peer_udp_ = {};
+        if (pacer_) pacer_->set_stream_rate(id_, 0);
+    }
+    reset_video_queue();
 }
 
 int RtpServer::peer_count() const {
@@ -189,6 +205,7 @@ void RtpServer::on_message(const signal::Message& m) {
             }
             peer_udp_.sin_port = htons(port);
             peer_streaming_ = true;
+            if (pacer_) pacer_->set_stream_rate(id_, pacing_kbps_);
         }
         char ip[INET_ADDRSTRLEN] = {0};
         {
@@ -205,11 +222,7 @@ void RtpServer::on_message(const signal::Message& m) {
             if (input::parse(m.body, e)) on_input(e);
         }
     } else if (m.type == signal::Type::kBye) {
-        {
-            std::lock_guard<std::mutex> lk(peer_mu_);
-            peer_streaming_ = false;
-        }
-        reset_video_queue();
+        on_disconnect();
         std::fprintf(stderr, "[rtp] client bye\n");
     }
 }

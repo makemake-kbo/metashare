@@ -158,6 +158,7 @@ void Server::client_loop(int fd, const sockaddr_in& peer,
         ::shutdown(fd, SHUT_RDWR);
         ::close(fd);
     }
+    if (on_disconnect) on_disconnect();
 }
 
 }  // namespace metashare::signal

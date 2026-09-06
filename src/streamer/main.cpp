@@ -553,11 +553,6 @@ int main(int argc, char** argv) {
         }
 #endif
         const std::uint16_t port = static_cast<std::uint16_t>(opt.port + i);
-        if (!p->server->start(port, err)) {
-            std::fprintf(stderr, "[monitor %d] server start failed: %s\n", i,
-                         err.c_str());
-            return 1;
-        }
         // Service client PLI / keyframe requests by forcing the encoder's next
         // frame to be a keyframe.
         p->server->on_keyframe_request = [enc = p->encoder.get()] {
@@ -600,8 +595,8 @@ int main(int argc, char** argv) {
         p->abr_kbps = opt.bitrate_kbps;
         p->abr_last_down = std::chrono::steady_clock::now();
         p->abr_clean_since = p->abr_last_down;
-        pacer.set_stream_rate(i, opt.bitrate_kbps);
-        p->server->on_loss_report = [raw = p.get(), &pacer,
+        p->server->set_pacing_bitrate(opt.bitrate_kbps);
+        p->server->on_loss_report = [raw = p.get(),
                                      max_kbps = opt.bitrate_kbps](float lost) {
             const auto now = std::chrono::steady_clock::now();
             std::lock_guard<std::mutex> lk(raw->abr_mu);
@@ -633,9 +628,14 @@ int main(int argc, char** argv) {
                              static_cast<double>(lost) * 100.0);
                 raw->abr_kbps = next;
                 raw->encoder->set_bitrate(next);
-                pacer.set_stream_rate(raw->index, next);
+                raw->server->set_pacing_bitrate(next);
             }
         };
+        if (!p->server->start(port, err)) {
+            std::fprintf(stderr, "[monitor %d] server start failed: %s\n", i,
+                         err.c_str());
+            return 1;
+        }
         std::fprintf(stderr, "[monitor %d] signaling on tcp/%u\n", i,
                      static_cast<unsigned>(port));
 
@@ -717,6 +717,7 @@ int main(int argc, char** argv) {
                 next_tick += period;
                 auto now = std::chrono::steady_clock::now();
                 if (next_tick < now) next_tick = now + period;  // fell behind
+                if (raw->server->peer_count() == 0) continue;
 
                 AVFrame* frame = nullptr;
                 std::int64_t pts = 0;
