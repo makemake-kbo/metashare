@@ -56,13 +56,10 @@ public final class VideoDecoder {
     // to park buffers. Larger = more jitter absorbed but more latency AND more
     // starvation risk on the shared decoder.
     private static final long LEAD_MS = 8;
-    // If a frame's scheduled render time lands this far outside the present the
-    // playout timeline has broken (a long stall, an RTP-timestamp wrap, or slow
-    // sender/client clock drift accumulating) — rebuild the cushion from the
-    // current frame. Kept wide so an ordinary post-stall decode burst, whose
-    // frames are legitimately spread across their PTS cadence, is paced out
-    // rather than collapsed.
-    private static final long MAX_LEAD_MS = 250;
+    // Bound future holding even when a stalled decoder emits a burst.
+    private static final long MAX_LEAD_MS = 16;
+    private static final long MAX_DECODED_AGE_US = 50_000;
+    private volatile long latestQueuedPtsUsec = Long.MIN_VALUE;
 
     private MediaCodec codec;
     private HandlerThread callbackThread;
@@ -137,6 +134,7 @@ public final class VideoDecoder {
         this.height = height;
         this.haveAnchor = false;
         this.lastRenderNs = 0;
+        this.latestQueuedPtsUsec = Long.MIN_VALUE;
         this.mime = "h265".equalsIgnoreCase(codecName)
                 ? MediaFormat.MIMETYPE_VIDEO_HEVC
                 : MediaFormat.MIMETYPE_VIDEO_AVC;
@@ -198,6 +196,7 @@ public final class VideoDecoder {
             firstFrameDone = false;
             haveAnchor = false;        // new IDR re-anchors the playout timeline
             lastRenderNs = 0;          // and restarts the forward-only clock
+            latestQueuedPtsUsec = Long.MIN_VALUE;
             keyframeDropStreak = 0;
             recoverRetries = 0;
             codec.reset();
@@ -226,6 +225,11 @@ public final class VideoDecoder {
                 // time (never the 2-arg "render now" path): mixing immediate and
                 // timestamped releases on one surface can let a late frame land
                 // ahead of a held one and flip the picture backward.
+                if (latestQueuedPtsUsec != Long.MIN_VALUE &&
+                        info.presentationTimeUs < latestQueuedPtsUsec - MAX_DECODED_AGE_US) {
+                    c.releaseOutputBuffer(index, false);
+                    return;
+                }
                 long renderNs = scheduleRender(info.presentationTimeUs);
                 c.releaseOutputBuffer(index, renderNs);
             } catch (Exception ignored) {
@@ -380,6 +384,7 @@ public final class VideoDecoder {
             buf.put(annexB);
             int flags = keyframe ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
             codec.queueInputBuffer(idx, 0, annexB.length, ptsUsec, flags);
+            latestQueuedPtsUsec = ptsUsec;
             if (keyframe) awaitingKeyframe = false;  // parameter sets now in
             keyframeDropStreak = 0;  // codec is accepting input again
             diagFed++;
