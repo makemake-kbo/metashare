@@ -2,6 +2,8 @@
 
 #include <cstring>
 #include <cstdio>
+#include <algorithm>
+#include <limits>
 #include <vector>
 
 extern "C" {
@@ -18,6 +20,15 @@ std::string av_err(int e) {
     char buf[AV_ERROR_MAX_STRING_SIZE] = {0};
     av_strerror(e, buf, sizeof(buf));
     return buf;
+}
+
+// Keep rate-control bursts within the sender's 100 ms frame-age budget.
+// Pacing has 25% headroom for packet overhead and useful retransmissions.
+void set_rate(AVCodecContext* ctx, int kbps) {
+    ctx->bit_rate = static_cast<std::int64_t>(kbps) * 1000;
+    ctx->rc_max_rate = ctx->bit_rate;
+    ctx->rc_buffer_size = static_cast<int>(std::clamp<std::int64_t>(
+        ctx->bit_rate / 10, 1, std::numeric_limits<int>::max()));
 }
 
 // One candidate codec the encoder will try to open, in priority order.
@@ -83,7 +94,7 @@ bool Encoder::open(const EncoderConfig& cfg, std::string& err) {
         // Drive timestamps in microseconds so source pts pass straight through.
         ctx->time_base = AVRational{1, 1'000'000};
         ctx->framerate = AVRational{cfg.fps_num, cfg.fps_den};
-        ctx->bit_rate = static_cast<std::int64_t>(cfg.bitrate_kbps) * 1000;
+        set_rate(ctx, cfg.bitrate_kbps);
         ctx->gop_size =
             cfg.keyint_seconds * cfg.fps_num / (cfg.fps_den ? cfg.fps_den : 1);
         ctx->max_b_frames = 0;
@@ -229,7 +240,7 @@ void Encoder::close() {
 bool Encoder::reconfigure_bitrate(int kbps, std::string& err) {
     if (std::strcmp(chosen_name_, "libx264") == 0) {
         // FFmpeg's x264 wrapper applies ABR changes on the next input frame.
-        ctx_->bit_rate = static_cast<std::int64_t>(kbps) * 1000;
+        set_rate(ctx_, kbps);
         cfg_.bitrate_kbps = kbps;
         return true;
     }
@@ -245,7 +256,7 @@ bool Encoder::reconfigure_bitrate(int kbps, std::string& err) {
     next->height = ctx_->height;
     next->time_base = ctx_->time_base;
     next->framerate = ctx_->framerate;
-    next->bit_rate = static_cast<std::int64_t>(kbps) * 1000;
+    set_rate(next, kbps);
     next->gop_size = ctx_->gop_size;
     next->max_b_frames = ctx_->max_b_frames;
     next->flags = ctx_->flags;
