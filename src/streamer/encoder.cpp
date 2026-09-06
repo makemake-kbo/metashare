@@ -139,6 +139,9 @@ bool Encoder::open(const EncoderConfig& cfg, std::string& err) {
                 av_opt_set(ctx->priv_data, "tune", "ull", 0);   // ultra-low-lat
                 av_opt_set(ctx->priv_data, "rc", "cbr", 0);
                 av_opt_set_int(ctx->priv_data, "forced-idr", 1, 0);
+                av_opt_set_int(ctx->priv_data, "delay", 0, 0);
+                av_opt_set_int(ctx->priv_data, "zerolatency", 1, 0);
+                av_opt_set_int(ctx->priv_data, "rc-lookahead", 0, 0);
             } else if (std::strcmp(c.name, "hevc_vaapi") == 0) {
                 av_opt_set(ctx->priv_data, "rc_mode", "CBR", 0);
                 av_opt_set(ctx->priv_data, "quality", "realtime", 0);
