@@ -149,6 +149,7 @@ void RtpServer::on_connect(const sockaddr_in& peer) {
         peer_udp_.sin_port = 0;  // unknown until READY
         peer_streaming_ = false;
     }
+    reset_video_queue();
     send_hello();
 }
 
@@ -197,97 +198,116 @@ void RtpServer::on_message(const signal::Message& m) {
         std::fprintf(stderr, "[rtp] client ready -> udp %s:%u\n", ip, port);
         if (!signaling_.send({signal::Type::kStart, ""}))
             std::fprintf(stderr, "[rtp] failed to send START\n");
+        if (on_keyframe_request) on_keyframe_request();
     } else if (m.type == signal::Type::kInput) {
         if (on_input) {
             input::Event e;
             if (input::parse(m.body, e)) on_input(e);
         }
     } else if (m.type == signal::Type::kBye) {
-        std::lock_guard<std::mutex> lk(peer_mu_);
-        peer_streaming_ = false;
+        {
+            std::lock_guard<std::mutex> lk(peer_mu_);
+            peer_streaming_ = false;
+        }
+        reset_video_queue();
         std::fprintf(stderr, "[rtp] client bye\n");
     }
 }
 
+void RtpServer::reset_video_queue() {
+    std::lock_guard<std::mutex> lk(send_mu_);
+    send_q_.clear();
+    queued_packets_ = 0;
+    ++send_generation_;
+    awaiting_keyframe_ = true;
+}
+
 void RtpServer::broadcast_video(const std::uint8_t* data, std::size_t size,
                                 std::int64_t pts_usec, bool keyframe) {
-    (void)keyframe;
+    const auto deadline = std::chrono::steady_clock::now() + kMaxSendAge;
+    bool request_keyframe = false;
     {
-        std::lock_guard<std::mutex> lk(peer_mu_);
-        if (!peer_streaming_) return;
-    }
+        // Keep the connection and queue generation stable while packetizing.
+        std::scoped_lock lk(peer_mu_, send_mu_);
+        if (!peer_streaming_ || (awaiting_keyframe_ && !keyframe)) return;
+        std::vector<rtp::Packet> packets;
+        video_packer_->packetize(data, size, pts_usec, packets);
+        if (packets.empty()) return;
 
-    std::vector<rtp::Packet> packets;
-    video_packer_->packetize(data, size, pts_usec, packets);
-    if (packets.empty()) return;
-
-    for (const auto& pkt : packets) {
-        video_retx_.record(rtp::seq_of(pkt), pkt);
-        video_pkts_.fetch_add(1, std::memory_order_relaxed);
-        video_octets_.fetch_add(pkt.size(), std::memory_order_relaxed);
-    }
-
-    // Hand the packets to sender_thread_ instead of writing (and pacing) them
-    // here. The pacer's token-bucket sleep used to run inline on this — the
-    // capture/encode thread — so a big IDR could block it for hundreds of ms
-    // and break the even-PTS cadence. Enqueue-and-return keeps this thread free
-    // to grab the next frame on the tick grid; the wire is still paced, just
-    // from the other side of this queue.
-    {
-        std::lock_guard<std::mutex> lk(send_mu_);
-        // Bound the backlog. A healthy stream drains between keyframes, so an
-        // overflow means the link genuinely can't carry the encoder's output;
-        // shed the oldest (most stale) packets rather than grow latency without
-        // limit — the client's NACK/PLI path resyncs from the next keyframe.
-        constexpr std::size_t kMaxQueued = 4096;
-        if (send_q_.size() + packets.size() > kMaxQueued) {
-            std::size_t overflow = send_q_.size() + packets.size() - kMaxQueued;
-            while (overflow-- > 0 && !send_q_.empty()) send_q_.pop_front();
+        constexpr std::size_t kMaxQueuedPackets = 4096;  // memory bound only
+        if ((!send_q_.empty() &&
+             std::chrono::steady_clock::now() >= send_q_.front().deadline) ||
+            queued_packets_ + packets.size() > kMaxQueuedPackets) {
+            send_q_.clear();
+            queued_packets_ = 0;
+            ++send_generation_;  // cancels the frame already being paced
+            awaiting_keyframe_ = true;
             send_drops_.fetch_add(1, std::memory_order_relaxed);
         }
-        for (auto& pkt : packets) send_q_.push_back(std::move(pkt));
+        if ((awaiting_keyframe_ && !keyframe) ||
+            packets.size() > kMaxQueuedPackets) {
+            awaiting_keyframe_ = true;
+            request_keyframe = true;
+        } else {
+            awaiting_keyframe_ = false;
+            queued_packets_ += packets.size();
+            send_q_.push_back({std::move(packets), deadline, send_generation_});
+        }
     }
+    if (request_keyframe && on_keyframe_request) on_keyframe_request();
     send_cv_.notify_one();
-
-    video_last_ts_.store(
-        static_cast<std::uint32_t>(
-            (static_cast<std::uint64_t>(pts_usec) * rtp::kVideoClockRate) /
-            1'000'000),
-        std::memory_order_relaxed);
 }
 
 void RtpServer::sender_loop() {
-    std::vector<rtp::Packet> batch;
     while (running_) {
+        VideoFrame frame;
         {
             std::unique_lock<std::mutex> lk(send_mu_);
             send_cv_.wait(lk, [this] { return !running_ || !send_q_.empty(); });
-            if (!running_ && send_q_.empty()) break;
-            // Take everything queued so far in one swipe (still paced per
-            // packet below); anything that arrives while we drain waits for the
-            // next pass. Keeps send_mu_ held only briefly.
-            batch.clear();
-            batch.reserve(send_q_.size());
-            for (auto& p : send_q_) batch.push_back(std::move(p));
-            send_q_.clear();
-        }
-        sockaddr_in dst{};
-        bool streaming;
-        {
-            std::lock_guard<std::mutex> lk(peer_mu_);
-            streaming = peer_streaming_;
-            dst = peer_udp_;
-        }
-        if (!streaming) continue;  // client gone — drop the batch
-        for (const auto& pkt : batch) {
             if (!running_) break;
-            // The shared pacer smooths keyframe bursts across *all* pipelines
-            // so the aggregate stays under what the WiFi link can absorb. Now
-            // that it runs here, the sleep costs wire latency, not a capture
-            // stall.
-            if (pacer_) pacer_->consume(pkt.size());
-            ::sendto(udp_fd_, pkt.data(), pkt.size(), 0,
-                     reinterpret_cast<sockaddr*>(&dst), sizeof(dst));
+            frame = std::move(send_q_.front());
+            send_q_.pop_front();
+            queued_packets_ -= frame.packets.size();
+        }
+        for (const auto& pkt : frame.packets) {
+            if (!running_) break;
+            const bool paced =
+                !pacer_ || pacer_->consume(pkt.size(), frame.deadline);
+            bool request_keyframe = false;
+            bool sent = false;
+            {
+                std::scoped_lock lk(peer_mu_, send_mu_);
+                if (!peer_streaming_ || frame.generation != send_generation_)
+                    break;
+                if (paced &&
+                    std::chrono::steady_clock::now() < frame.deadline) {
+                    sent =
+                        ::sendto(udp_fd_, pkt.data(), pkt.size(), MSG_DONTWAIT,
+                                 reinterpret_cast<sockaddr*>(&peer_udp_),
+                                 sizeof(peer_udp_)) ==
+                        static_cast<ssize_t>(pkt.size());
+                }
+                if (!sent) {
+                    // A partial access unit invalidates every dependent frame.
+                    send_q_.clear();
+                    queued_packets_ = 0;
+                    ++send_generation_;
+                    awaiting_keyframe_ = true;
+                    send_drops_.fetch_add(1, std::memory_order_relaxed);
+                    request_keyframe = true;
+                } else {
+                    video_retx_.record(rtp::seq_of(pkt), pkt);
+                    video_pkts_.fetch_add(1, std::memory_order_relaxed);
+                    video_octets_.fetch_add(pkt.size(),
+                                            std::memory_order_relaxed);
+                    video_last_ts_.store(
+                        (static_cast<std::uint32_t>(pkt[4]) << 24) |
+                            (pkt[5] << 16) | (pkt[6] << 8) | pkt[7],
+                        std::memory_order_relaxed);
+                }
+            }
+            if (request_keyframe && on_keyframe_request) on_keyframe_request();
+            if (!sent) break;
         }
     }
 }

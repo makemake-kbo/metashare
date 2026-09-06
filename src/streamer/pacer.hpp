@@ -45,12 +45,15 @@ class Pacer {
 
     // Block (sleeping in small slices) until len bytes fit under the rate.
     // With no configured rate this is a no-op.
-    void consume(std::size_t len) {
+    bool consume(std::size_t len,
+                 std::chrono::steady_clock::time_point deadline =
+                     std::chrono::steady_clock::time_point::max()) {
         using clock = std::chrono::steady_clock;
         std::unique_lock<std::mutex> lk(mu_);
-        if (rate_bytes_per_sec_ <= 0) return;
+        if (rate_bytes_per_sec_ <= 0) return true;
         for (;;) {
             const auto now = clock::now();
+            if (now >= deadline) return false;
             const double dt =
                 std::chrono::duration<double>(now - last_refill_).count();
             last_refill_ = now;
@@ -58,7 +61,7 @@ class Pacer {
                 std::min(burst_bytes_, tokens_ + dt * rate_bytes_per_sec_);
             if (tokens_ >= static_cast<double>(len)) {
                 tokens_ -= static_cast<double>(len);
-                return;
+                return true;
             }
             const double need =
                 (static_cast<double>(len) - tokens_) / rate_bytes_per_sec_;
@@ -67,7 +70,7 @@ class Pacer {
             std::this_thread::sleep_for(
                 std::chrono::duration<double>(std::min(need, 0.002)));
             lk.lock();
-            if (rate_bytes_per_sec_ <= 0) return;
+            if (rate_bytes_per_sec_ <= 0) return true;
         }
     }
 

@@ -95,6 +95,7 @@ class RtpServer {
 
   private:
     void on_connect(const sockaddr_in& peer);
+    void reset_video_queue();
     void on_message(const signal::Message& m);
     void send_hello();
     // Open the UDP socket (once) and start the NACK receiver thread.
@@ -130,7 +131,16 @@ class RtpServer {
     std::thread sender_thread_;
     std::mutex send_mu_;
     std::condition_variable send_cv_;
-    std::deque<rtp::Packet> send_q_;
+    struct VideoFrame {
+        std::vector<rtp::Packet> packets;
+        std::chrono::steady_clock::time_point deadline;
+        std::uint64_t generation;
+    };
+    static constexpr auto kMaxSendAge = std::chrono::milliseconds(100);
+    std::deque<VideoFrame> send_q_;
+    std::size_t queued_packets_ = 0;
+    std::uint64_t send_generation_ = 0;  // guarded by send_mu_
+    bool awaiting_keyframe_ = true;
     std::atomic<std::uint64_t> send_drops_{
         0};  // packets shed on queue overflow
 
