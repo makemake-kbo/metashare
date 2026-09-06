@@ -43,6 +43,7 @@ class MutterVirtualSource final : public FrameSource {
     void stop() override;
     SourceFormat format() const override { return fmt_; }
     int next_frame(AVFrame** out, std::int64_t& pts_usec) override;
+    int latest_frame(AVFrame** out, std::int64_t& pts_usec) override;
 
     int monitor_idx() const { return monitor_idx_; }
 
@@ -51,6 +52,8 @@ class MutterVirtualSource final : public FrameSource {
     void on_process();
 
   private:
+    int deliver_front_locked(AVFrame** out, std::int64_t& pts_usec);
+
     MutterScreenCastSession& session_;
     int monitor_idx_;
     int fps_hint_;

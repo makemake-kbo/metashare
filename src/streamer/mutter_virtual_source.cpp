@@ -277,6 +277,19 @@ int MutterVirtualSource::next_frame(AVFrame** out, std::int64_t& pts_usec) {
         return 0;
     if (!running_) return -1;
     have_new_ = false;
+    return deliver_front_locked(out, pts_usec);
+}
+
+int MutterVirtualSource::latest_frame(AVFrame** out, std::int64_t& pts_usec) {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (!running_) return -1;
+    if (!have_new_) return 0;
+    have_new_ = false;
+    return deliver_front_locked(out, pts_usec);
+}
+
+int MutterVirtualSource::deliver_front_locked(AVFrame** out,
+                                              std::int64_t& pts_usec) {
     if (!front_) return 0;
     // Copy into out_ (never touched by the PipeWire thread) so the returned
     // frame stays valid until the next call even under a burst of new frames.
